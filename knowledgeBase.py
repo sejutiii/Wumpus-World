@@ -1,189 +1,174 @@
-from typing import Dict, List, Set, Tuple
-import json
+from typing import List, Tuple, Set, Dict  # Add Dict here
+from collections import deque
 
-class KnowledgeBase:
-    """Knowledge Base for the Wumpus World AI Agent using Propositional Logic"""
-    
-    def __init__(self):
-        self.facts: Set[str] = set()
-        self.rules: List[str] = []
-        self.visited_cells: Set[Tuple[int, int]] = set()
-        self.safe_cells: Set[Tuple[int, int]] = set()
-        self.danger_cells: Set[Tuple[int, int]] = set()
-        self.pit_cells: Set[Tuple[int, int]] = set()
-        self.wumpus_cell: Tuple[int, int] = None
-        self.gold_cell: Tuple[int, int] = None
-        self.wumpus_alive = True
+class PropositionalKB:
+    def __init__(self, grid_size: int):
+        self.grid_size = grid_size
+        self.facts = set()  # Known facts: "Safe(1,1)", "Breeze(2,1)", etc.
+        self.rules = []     # Inference rules
+        self.playing_grid = [["0" for _ in range(grid_size)] for _ in range(grid_size)]
+        self.playing_grid[0][0] = "1"  # Agent starts at (0,0), mark as visited
+        self.gold_cell = None
         
-        # Initialize basic rules
-        self._initialize_rules()
-    
-    def _initialize_rules(self):
-        """Initialize basic logical rules for the Wumpus World"""
-        self.rules = [
-            "Breeze(x,y) → Pit(adjacent_to(x,y))",
-            "Stench(x,y) → Wumpus(adjacent_to(x,y))",
-            "¬Breeze(x,y) → ¬Pit(adjacent_to(x,y))",
-            "¬Stench(x,y) → ¬Wumpus(adjacent_to(x,y))",
-            "Glitter(x,y) → Gold(x,y)",
-            "Visit(x,y) ∧ ¬Death → Safe(x,y)"
-        ]
-    
-    def add_percepts(self, position: Tuple[int, int], percepts: List[str]):
-        """Add percepts from the current position to the knowledge base"""
-        x, y = position
-        self.visited_cells.add(position)
-        self.safe_cells.add(position)
-        
-        # Add percept facts
-        for percept in percepts:
-            if percept == "Breeze":
-                self.facts.add(f"Breeze({x},{y})")
-                self._infer_pits_from_breeze(position)
-            elif percept == "Stench":
-                self.facts.add(f"Stench({x},{y})")
-                self._infer_wumpus_from_stench(position)
-            elif percept == "Glitter":
-                self.facts.add(f"Glitter({x},{y})")
-                self.gold_cell = position
-            elif percept == "Bump":
-                self.facts.add(f"Bump({x},{y})")
-            elif percept == "Scream":
-                self.facts.add(f"Scream")
-                self.wumpus_alive = False
-        
-        # If no breeze, adjacent cells are safe from pits
-        if "Breeze" not in percepts:
-            self.facts.add(f"¬Breeze({x},{y})")
-            self._infer_safe_from_no_breeze(position)
-        
-        # If no stench, adjacent cells are safe from wumpus
-        if "Stench" not in percepts:
-            self.facts.add(f"¬Stench({x},{y})")
-            self._infer_safe_from_no_stench(position)
-    
-    def _infer_pits_from_breeze(self, position: Tuple[int, int]):
-        """Infer possible pit locations from breeze"""
-        adjacent_cells = self._get_adjacent_cells(position)
-        unknown_adjacent = [cell for cell in adjacent_cells 
-                          if cell not in self.visited_cells and cell not in self.safe_cells]
-        
-        for cell in unknown_adjacent:
-            self.danger_cells.add(cell)
-            x, y = cell
-            self.facts.add(f"PossiblePit({x},{y})")
-    
-    def _infer_wumpus_from_stench(self, position: Tuple[int, int]):
-        """Infer possible wumpus location from stench"""
-        if not self.wumpus_alive:
-            return
-            
-        adjacent_cells = self._get_adjacent_cells(position)
-        unknown_adjacent = [cell for cell in adjacent_cells 
-                          if cell not in self.visited_cells and cell not in self.safe_cells]
-        
-        for cell in unknown_adjacent:
-            self.danger_cells.add(cell)
-            x, y = cell
-            self.facts.add(f"PossibleWumpus({x},{y})")
-    
-    def _infer_safe_from_no_breeze(self, position: Tuple[int, int]):
-        """Infer safe cells from absence of breeze"""
-        adjacent_cells = self._get_adjacent_cells(position)
-        for cell in adjacent_cells:
-            if cell not in self.pit_cells:
-                self.safe_cells.add(cell)
-                x, y = cell
-                self.facts.add(f"Safe({x},{y})")
-                # Remove from danger if it was there
-                self.danger_cells.discard(cell)
-    
-    def _infer_safe_from_no_stench(self, position: Tuple[int, int]):
-        """Infer safe cells from absence of stench"""
-        if not self.wumpus_alive:
-            return
-            
-        adjacent_cells = self._get_adjacent_cells(position)
-        for cell in adjacent_cells:
-            if self.wumpus_cell != cell:
-                self.safe_cells.add(cell)
-                x, y = cell
-                self.facts.add(f"SafeFromWumpus({x},{y})")
-    
-    def _get_adjacent_cells(self, position: Tuple[int, int]) -> List[Tuple[int, int]]:
-        """Get valid adjacent cells"""
-        x, y = position
-        adjacent = []
-        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-            new_x, new_y = x + dx, y + dy
-            if 0 <= new_x < 10 and 0 <= new_y < 10:
-                adjacent.append((new_x, new_y))
-        return adjacent
-    
     def add_fact(self, fact: str):
         """Add a fact to the knowledge base"""
         self.facts.add(fact)
         
-        if fact == "WumpusKilled":
-            self.wumpus_alive = False
+    def add_rule(self, premise, conclusion):
+        """Add an inference rule: premise → conclusion"""
+        self.rules.append((premise, conclusion))
+        
+    def query(self, fact: str) -> bool:
+        """Check if a fact can be inferred"""
+        return fact in self.facts
+        
+    def forward_chain(self):
+        """Forward chaining inference"""
+        changed = True
+        while changed:
+            changed = False
+            for premise, conclusion in self.rules:
+                if self.can_infer(premise) and conclusion not in self.facts:
+                    self.facts.add(conclusion)
+                    changed = True
+                    
+    def can_infer(self, premise) -> bool:
+        """Check if premise can be satisfied"""
+        if isinstance(premise, str):
+            return premise in self.facts
+        elif isinstance(premise, tuple) and premise[0] == 'AND':
+            return all(self.can_infer(p) for p in premise[1:])
+        elif isinstance(premise, tuple) and premise[0] == 'OR':
+            return any(self.can_infer(p) for p in premise[1:])
+        return False
     
-    def is_safe(self, position: Tuple[int, int]) -> bool:
-        """Check if a position is known to be safe"""
-        return position in self.safe_cells
+    def add_wumpus_rules(self):
+        """Add domain-specific rules for Wumpus World"""
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                adj_cells = self._get_adjacent_cells((x, y))
+                
+                no_breeze = f"NoBreeze({x},{y})"
+                for nx, ny in adj_cells:
+                    self.add_rule(no_breeze, f"NoPit({nx},{ny})")
+                
+                no_stench = f"NoStench({x},{y})"
+                for nx, ny in adj_cells:
+                    self.add_rule(no_stench, f"NoWumpus({nx},{ny})")
+                
+                if adj_cells:
+                    for nx, ny in adj_cells:
+                        premise = ('AND', f"NoPit({nx},{ny})", f"NoWumpus({nx},{ny})")
+                        self.add_rule(premise, f"Safe({nx},{ny})")
     
-    def is_dangerous(self, position: Tuple[int, int]) -> bool:
-        """Check if a position is known to be dangerous"""
-        return position in self.danger_cells
+    def update_knowledge_base(self, position: Tuple[int, int], percepts: List[str]):
+        """Update KB based on current percepts"""
+        x, y = position
+        current_cell = f"({x},{y})"
+        
+        if not percepts or "Glitter" in percepts:
+            percept = "-" if not percepts else "G"
+        elif "Breeze" in percepts and "Stench" in percepts:
+            percept = "T"
+        elif "Breeze" in percepts:
+            percept = "B"
+        elif "Stench" in percepts:
+            percept = "S"
+        else:
+            percept = "-"
+        
+        if percept == '-':
+            self.add_fact(f"NoBreeze{current_cell}")
+            self.add_fact(f"NoStench{current_cell}")
+            self.add_fact(f"Safe{current_cell}")
+        
+        elif percept == 'B':
+            self.add_fact(f"Breeze{current_cell}")
+            self.add_fact(f"NoStench{current_cell}")
+            adj_cells = self._get_adjacent_cells(position)
+            for nx, ny in adj_cells:
+                self.add_rule(f"Breeze{current_cell}", f"PossiblePit({nx},{ny})")
+        
+        elif percept == 'S':
+            self.add_fact(f"Stench{current_cell}")
+            self.add_fact(f"NoBreeze{current_cell}")
+            adj_cells = self._get_adjacent_cells(position)
+            for nx, ny in adj_cells:
+                self.add_rule(f"Stench{current_cell}", f"PossibleWumpus({nx},{ny})")
+        
+        elif percept == 'T':
+            self.add_fact(f"Breeze{current_cell}")
+            self.add_fact(f"Stench{current_cell}")
+            adj_cells = self._get_adjacent_cells(position)
+            for nx, ny in adj_cells:
+                self.add_rule(f"Breeze{current_cell}", f"PossiblePit({nx},{ny})")
+                self.add_rule(f"Stench{current_cell}", f"PossibleWumpus({nx},{ny})")
+        
+        elif percept == 'G':
+            self.add_fact(f"Glitter{current_cell}")
+            self.add_fact(f"Gold{current_cell}")
+            self.gold_cell = position
+            self.playing_grid[y][x] = "99"
+        
+        self.add_fact(f"Visited{current_cell}")
+        self.playing_grid[y][x] = "1"
+        
+        self.forward_chain()
+        self.update_playing_grid_from_kb()
     
-    def get_safe_unvisited_cells(self) -> List[Tuple[int, int]]:
-        """Get list of safe cells that haven't been visited"""
-        return [cell for cell in self.safe_cells if cell not in self.visited_cells]
+    def update_playing_grid_from_kb(self):
+        """Update playing grid based on KB knowledge"""
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                cell_ref = f"({x},{y})"
+                
+                if self.query(f"Visited{cell_ref}"):
+                    self.playing_grid[y][x] = "1"
+                elif self.query(f"Safe{cell_ref}"):
+                    self.playing_grid[y][x] = "0"
+                elif self.query(f"PossibleWumpus{cell_ref}") and self.query(f"PossiblePit{cell_ref}"):
+                    self.playing_grid[y][x] = "-5"
+                elif self.query(f"PossibleWumpus{cell_ref}"):
+                    self.playing_grid[y][x] = "-1"
+                elif self.query(f"PossiblePit{cell_ref}"):
+                    self.playing_grid[y][x] = "-2"
+    
+    def set_gold_found(self, position: Tuple[int, int]):
+        x, y = position
+        self.playing_grid[y][x] = "99"
+        self.gold_cell = position
+        self.add_fact(f"Gold({x},{y})")
+    
+    def has_gold_location(self) -> bool:
+        return self.gold_cell is not None
+    
+    def get_gold_location(self) -> Tuple[int, int]:
+        return self.gold_cell
+    
+    def get_playing_grid(self) -> List[List[str]]:
+        return [row[:] for row in self.playing_grid]
+    
+    def all_cells_visited(self) -> bool:
+        for row in self.playing_grid:
+            if "0" in row:
+                return False
+        return True
+    
+    def _get_adjacent_cells(self, position: Tuple[int, int]) -> List[Tuple[int, int]]:
+        x, y = position
+        adjacent = []
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            new_x, new_y = x + dx, y + dy
+            if 0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size:
+                adjacent.append((new_x, new_y))
+        return adjacent
     
     def get_knowledge_summary(self) -> List[Dict]:
-        """Get a summary of current knowledge for the UI"""
         summary = []
-        
-        # Add facts
         for fact in sorted(self.facts):
             summary.append({
                 "type": "fact",
                 "content": fact,
                 "confidence": 1.0
             })
-        
-        # Add inferred safe cells
-        for cell in self.safe_cells:
-            summary.append({
-                "type": "inference",
-                "content": f"Safe({cell[0]},{cell[1]})",
-                "confidence": 1.0
-            })
-        
-        # Add possible dangers
-        for cell in self.danger_cells:
-            summary.append({
-                "type": "inference",
-                "content": f"Dangerous({cell[0]},{cell[1]})",
-                "confidence": 0.5
-            })
-        
-        # Add wumpus status
-        summary.append({
-            "type": "fact",
-            "content": f"WumpusAlive: {self.wumpus_alive}",
-            "confidence": 1.0
-        })
-        
         return summary
-    
-    def get_visited_cells(self) -> Set[Tuple[int, int]]:
-        """Get all visited cells"""
-        return self.visited_cells.copy()
-    
-    def has_gold_location(self) -> bool:
-        """Check if gold location is known"""
-        return self.gold_cell is not None
-    
-    def get_gold_location(self) -> Tuple[int, int]:
-        """Get gold location if known"""
-        return self.gold_cell

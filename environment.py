@@ -1,201 +1,152 @@
+from typing import List, Tuple, Set
 import random
-from typing import List, Tuple, Dict, Set
 
 class WumpusEnvironment:
-    """Wumpus World Environment - 10x10 grid implementation"""
-    
-    def __init__(self):
-        self.grid_size = 10
-        self.grid = [["." for _ in range(self.grid_size)] for _ in range(self.grid_size)]
-        self.wumpus_position = None
-        self.gold_position = None
-        self.pit_positions = set()
-        self.wumpus_alive = True
+    def __init__(self, grid_size: int = 10):
+        self.grid_size = grid_size
+        self.grid = None
+        self.percepts_grid = None
+        
+    def load_default_environment(self):
+        """Generate a random environment instead of loading from file"""
+        self.generate_random_environment()
         
     def generate_random_environment(self):
-        """Generate a random Wumpus world environment"""
-        # Clear the grid
-        self.grid = [["." for _ in range(self.grid_size)] for _ in range(self.grid_size)]
-        self.pit_positions.clear()
+        """Generate a random environment with 1-3 Wumpuses, 3-6 pits, and 1 gold"""
+        # Initialize empty grid
+        self.grid = [["-" for _ in range(self.grid_size)] for _ in range(self.grid_size)]
+        self.percepts_grid = [["-" for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         
-        # Place Wumpus (not at starting position (0,0))
-        while True:
-            x, y = random.randint(0, 9), random.randint(0, 9)
-            if (x, y) != (0, 0):
-                self.wumpus_position = (x, y)
-                self.grid[y][x] = "W"
-                break
+        # Place gold at a random position (not (0,0))
+        gold_positions = [(x, y) for x in range(self.grid_size) for y in range(self.grid_size) if (x, y) != (0, 0)]
+        gold_pos = random.choice(gold_positions)
+        self.grid[gold_pos[1]][gold_pos[0]] = "G"
+        self.percepts_grid[gold_pos[1]][gold_pos[0]] = "G"
         
-        # Place Gold (not at starting position or wumpus position)
-        while True:
-            x, y = random.randint(0, 9), random.randint(0, 9)
-            if (x, y) != (0, 0) and (x, y) != self.wumpus_position:
-                self.gold_position = (x, y)
-                self.grid[y][x] = "G"
-                break
+        # Place 1-3 Wumpuses at random positions (not (0,0) or gold)
+        num_wumpuses = random.randint(1, 3)
+        available_positions = [(x, y) for x in range(self.grid_size) for y in range(self.grid_size) 
+                             if (x, y) != (0, 0) and (x, y) != gold_pos]
+        wumpus_positions = random.sample(available_positions, num_wumpuses)
+        for x, y in wumpus_positions:
+            self.grid[y][x] = "W"
+            self.percepts_grid[y][x] = "W"
         
-        # Place Pits (3-6 pits, not at starting position, wumpus, or gold)
+        # Update available positions to exclude Wumpuses
+        available_positions = [(x, y) for x, y in available_positions if (x, y) not in wumpus_positions]
+        
+        # Place 3-6 pits at random positions (not (0,0), gold, or Wumpuses)
         num_pits = random.randint(3, 6)
-        pits_placed = 0
-        attempts = 0
+        pit_positions = random.sample(available_positions, min(num_pits, len(available_positions)))
+        for x, y in pit_positions:
+            self.grid[y][x] = "P"
+            self.percepts_grid[y][x] = "P"
         
-        while pits_placed < num_pits and attempts < 100:
-            x, y = random.randint(0, 9), random.randint(0, 9)
-            if ((x, y) != (0, 0) and 
-                (x, y) != self.wumpus_position and 
-                (x, y) != self.gold_position and
-                (x, y) not in self.pit_positions):
-                
-                self.pit_positions.add((x, y))
-                self.grid[y][x] = "P"
-                pits_placed += 1
-            attempts += 1
+        # Generate percepts for adjacent cells
+        adjacent_p = set()
+        adjacent_w = set()
         
-        self.wumpus_alive = True
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                if self.grid[y][x] == "P":
+                    for nx, ny in self._get_adjacent_cells((x, y)):
+                        if self.grid[ny][nx] == "-":
+                            adjacent_p.add((nx, ny))
+                if self.grid[y][x] == "W":
+                    for nx, ny in self._get_adjacent_cells((x, y)):
+                        if self.grid[ny][nx] == "-":
+                            adjacent_w.add((nx, ny))
+        
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                if self.grid[y][x] == "-":
+                    is_breeze = (x, y) in adjacent_p
+                    is_stench = (x, y) in adjacent_w
+                    if is_breeze and is_stench:
+                        self.percepts_grid[y][x] = "T"
+                    elif is_breeze:
+                        self.percepts_grid[y][x] = "B"
+                    elif is_stench:
+                        self.percepts_grid[y][x] = "S"
     
-    def load_environment(self, env_data: Dict):
-        """Load environment from provided data"""
-        if "grid" in env_data:
-            grid_data = env_data["grid"]
-            self.grid = [[cell for cell in row] for row in grid_data]
-            
-            # Extract positions from grid
-            self.pit_positions.clear()
-            for y in range(self.grid_size):
-                for x in range(self.grid_size):
-                    cell = self.grid[y][x]
-                    if "W" in cell:
-                        self.wumpus_position = (x, y)
-                    elif "G" in cell:
-                        self.gold_position = (x, y)
-                    elif "P" in cell:
-                        self.pit_positions.add((x, y))
-            
-            self.wumpus_alive = True
+    def load_environment(self, grid: List[List[str]]):
+        """Load environment from provided grid"""
+        self.grid_size = len(grid)
+        self.grid = [row[:] for row in grid]
+        self.percepts_grid = [row[:] for row in grid]
+        
+        # Generate percepts based on pits and Wumpuses
+        adjacent_p = set()
+        adjacent_w = set()
+        
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                if self.grid[y][x] == "P":
+                    for nx, ny in self._get_adjacent_cells((x, y)):
+                        if self.grid[ny][nx] == "-":
+                            adjacent_p.add((nx, ny))
+                if self.grid[y][x] == "W":
+                    for nx, ny in self._get_adjacent_cells((x, y)):
+                        if self.grid[ny][nx] == "-":
+                            adjacent_w.add((nx, ny))
+        
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                if self.grid[y][x] == "-":
+                    is_breeze = (x, y) in adjacent_p
+                    is_stench = (x, y) in adjacent_w
+                    if is_breeze and is_stench:
+                        self.percepts_grid[y][x] = "T"
+                    elif is_breeze:
+                        self.percepts_grid[y][x] = "B"
+                    elif is_stench:
+                        self.percepts_grid[y][x] = "S"
+    
+    def get_visible_grid(self, agent_pos: Tuple[int, int]) -> List[List[str]]:
+        """Return grid with only percepts visible at agent's position"""
+        visible_grid = [["-" for _ in range(self.grid_size)] for _ in range(self.grid_size)]
+        x, y = agent_pos
+        visible_grid[y][x] = self.percepts_grid[y][x]
+        return visible_grid
     
     def get_percepts(self, position: Tuple[int, int]) -> List[str]:
-        """Get percepts at the given position"""
-        percepts = []
+        """Return percepts at the given position"""
         x, y = position
-        
-        # Check for glitter (gold at current position)
-        if (x, y) == self.gold_position:
-            percepts.append("Glitter")
-        
-        # Check for breeze (pit in adjacent cell)
-        if self._has_adjacent_pit(position):
+        cell = self.percepts_grid[y][x]
+        percepts = []
+        if cell == "B":
             percepts.append("Breeze")
-        
-        # Check for stench (wumpus in adjacent cell)
-        if self._has_adjacent_wumpus(position):
+        elif cell == "S":
             percepts.append("Stench")
-        
+        elif cell == "T":
+            percepts.append("Breeze")
+            percepts.append("Stench")
+        elif cell == "G":
+            percepts.append("Glitter")
         return percepts
     
-    def _has_adjacent_pit(self, position: Tuple[int, int]) -> bool:
-        """Check if there's a pit in an adjacent cell"""
-        adjacent_cells = self._get_adjacent_cells(position)
-        return any(cell in self.pit_positions for cell in adjacent_cells)
+    def get_cell_contents(self, position: Tuple[int, int]) -> List[str]:
+        """Return actual contents of the cell (for checking death conditions)"""
+        x, y = position
+        cell = self.grid[y][x]
+        contents = []
+        if cell == "P":
+            contents.append("P")
+        elif cell == "W":
+            contents.append("W")
+        elif cell == "G":
+            contents.append("G")
+        return contents
     
-    def _has_adjacent_wumpus(self, position: Tuple[int, int]) -> bool:
-        """Check if there's a wumpus in an adjacent cell"""
-        if not self.wumpus_alive:
-            return False
-        
-        adjacent_cells = self._get_adjacent_cells(position)
-        return self.wumpus_position in adjacent_cells
+    def is_valid_position(self, position: Tuple[int, int]) -> bool:
+        x, y = position
+        return 0 <= x < self.grid_size and 0 <= y < self.grid_size
     
     def _get_adjacent_cells(self, position: Tuple[int, int]) -> List[Tuple[int, int]]:
-        """Get valid adjacent cells"""
         x, y = position
         adjacent = []
-        
         for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
             new_x, new_y = x + dx, y + dy
             if 0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size:
                 adjacent.append((new_x, new_y))
-        
         return adjacent
-    
-    def is_valid_position(self, position: Tuple[int, int]) -> bool:
-        """Check if position is within grid bounds"""
-        x, y = position
-        return 0 <= x < self.grid_size and 0 <= y < self.grid_size
-    
-    def get_cell_contents(self, position: Tuple[int, int]) -> str:
-        """Get contents of a specific cell"""
-        x, y = position
-        if self.is_valid_position(position):
-            return self.grid[y][x]
-        return ""
-    
-    def shoot_arrow(self, position: Tuple[int, int], direction: str) -> bool:
-        """Shoot arrow in specified direction, return True if wumpus hit"""
-        if not self.wumpus_alive:
-            return False
-        
-        x, y = position
-        
-        # Trace arrow path
-        while True:
-            if direction == "UP":
-                y -= 1
-            elif direction == "DOWN":
-                y += 1
-            elif direction == "LEFT":
-                x -= 1
-            elif direction == "RIGHT":
-                x += 1
-            
-            # Check if arrow is out of bounds
-            if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
-                break
-            
-            # Check if arrow hit wumpus
-            if (x, y) == self.wumpus_position:
-                self.wumpus_alive = False
-                return True
-        
-        return False
-    
-    def get_visible_grid(self, agent_position: Tuple[int, int]) -> List[List[str]]:
-        """Get grid representation for display (with agent position marked)"""
-        display_grid = [row[:] for row in self.grid]  # Deep copy
-        
-        # Mark agent position
-        agent_x, agent_y = agent_position
-        current_cell = display_grid[agent_y][agent_x]
-        if current_cell == ".":
-            display_grid[agent_y][agent_x] = "A"
-        else:
-            display_grid[agent_y][agent_x] = "A" + current_cell
-        
-        return display_grid
-    
-    def get_full_grid_state(self) -> Dict:
-        """Get complete grid state for debugging/admin view"""
-        return {
-            "grid": self.grid,
-            "wumpus_position": self.wumpus_position,
-            "gold_position": self.gold_position,
-            "pit_positions": list(self.pit_positions),
-            "wumpus_alive": self.wumpus_alive,
-            "grid_size": self.grid_size
-        }
-    
-    def is_dangerous_cell(self, position: Tuple[int, int]) -> bool:
-        """Check if a cell contains immediate danger"""
-        return (position in self.pit_positions or 
-                (position == self.wumpus_position and self.wumpus_alive))
-    
-    def get_safe_starting_area(self) -> List[Tuple[int, int]]:
-        """Get guaranteed safe cells around starting position"""
-        # Starting position (0,0) and adjacent cells are guaranteed safe
-        safe_cells = [(0, 0)]
-        
-        # Add adjacent cells if they don't contain dangers
-        for pos in self._get_adjacent_cells((0, 0)):
-            if not self.is_dangerous_cell(pos):
-                safe_cells.append(pos)
-        
-        return safe_cells
