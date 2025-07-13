@@ -49,13 +49,14 @@ class GameState:
         self.game_over = False
         self.has_gold = False
         self.visited_cells = {(0, 0)}
+        self.game_status = "playing"  # "playing", "won", "lost"
         
     def reset(self, environment_data=None):
-        self.environment = WumpusEnvironment()
+        self.environment = WumpusEnvironment(grid_size=10)  # Default size 10
         if environment_data:
             self.environment.load_environment(environment_data)
         else:
-            self.environment.load_default_environment()  # Load from sample.txt
+            self.environment.load_default_environment()  # Generates random environment
         
         self.knowledge_base = PropositionalKB(self.environment.grid_size)
         self.inference_engine = InferenceEngine(self.knowledge_base)
@@ -64,6 +65,7 @@ class GameState:
         self.game_over = False
         self.has_gold = False
         self.visited_cells = {(0, 0)}
+        self.game_status = "playing"
         self.knowledge_base.add_fact("Safe(0,0)")
         self.knowledge_base.add_fact("Visited(0,0)")
         self.knowledge_base.add_wumpus_rules()
@@ -75,7 +77,7 @@ class EnvironmentRequest(BaseModel):
 
 @app.post("/api/reset")
 async def reset_game(env_request: Optional[EnvironmentRequest] = None):
-    env_data = env_request.dict() if env_request else None
+    env_data = env_request.grid if env_request else None
     game_state.reset(env_data)
     
     await manager.broadcast({
@@ -137,11 +139,19 @@ def get_game_state_data():
             "has_gold": False,
             "knowledge_base": [],
             "last_inference": "",
-            "percepts": []
+            "percepts": [],
+            "game_status": "playing"
         }
     
+    # Debug: print the full grid to the server console after reset
+    print("Full environment grid:")
+    for row in game_state.environment.grid:
+        print(" ".join(row))
+    print("-" * 40)
     return {
-        "grid": game_state.environment.get_visible_grid(game_state.agent_pos),
+        # Show the full environment grid for the Wumpus World grid
+        "grid": game_state.environment.grid,
+        # Agent's knowledge grid
         "playing_grid": game_state.knowledge_base.get_playing_grid(),
         "agent_pos": list(game_state.agent_pos),
         "agent_alive": game_state.agent_alive,
@@ -149,7 +159,8 @@ def get_game_state_data():
         "has_gold": game_state.has_gold,
         "knowledge_base": game_state.knowledge_base.get_knowledge_summary(),
         "last_inference": game_state.inference_engine.get_last_inference(),
-        "percepts": game_state.environment.get_percepts(game_state.agent_pos)
+        "percepts": game_state.environment.get_percepts(game_state.agent_pos),
+        "game_status": game_state.game_status
     }
 
 async def run_ai_agent():
@@ -171,28 +182,33 @@ async def execute_agent_step():
         game_state.environment.grid_size
     )
     
-    if action == "GRAB" and "Glitter" in percepts:
-        game_state.has_gold = True
-        game_state.knowledge_base.set_gold_found(game_state.agent_pos)
-    
-    elif action.startswith("MOVE_"):
+    if not game_state.has_gold:
+        if action == "GRAB" and "Glitter" in percepts:
+            game_state.has_gold = True
+            game_state.knowledge_base.set_gold_found(game_state.agent_pos)
+            game_state.game_over = True
+            game_state.game_status = "won"
+    # Only allow movement after gold is found
+    if action.startswith("MOVE_"):
         direction = action.split("_")[1]
         new_pos = get_new_position(game_state.agent_pos, direction)
-        
         if game_state.environment.is_valid_position(new_pos):
             game_state.agent_pos = new_pos
             game_state.visited_cells.add(new_pos)
-            
             cell_contents = game_state.environment.get_cell_contents(new_pos)
             if "P" in cell_contents or "W" in cell_contents:
                 game_state.agent_alive = False
                 game_state.game_over = True
-    
+                game_state.game_status = "lost"
     # Check stopping conditions
     if game_state.has_gold and game_state.agent_pos == (0, 0):
         game_state.game_over = True
+        if game_state.game_status != "won":
+            game_state.game_status = "won"
     elif len(game_state.visited_cells) == game_state.environment.grid_size * game_state.environment.grid_size:
         game_state.game_over = True
+        if game_state.game_status == "playing":
+            game_state.game_status = "lost"
     
     await manager.broadcast({
         "type": "game_state",
