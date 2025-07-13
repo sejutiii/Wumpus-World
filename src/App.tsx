@@ -3,11 +3,10 @@ import { Play, Pause, RotateCcw, Zap, Brain, Target, MapPin, Activity } from 'lu
 
 interface GameState {
   grid: string[][];
+  playing_grid: string[][];
   agent_pos: [number, number];
   agent_alive: boolean;
   game_over: boolean;
-  score: number;
-  arrows_left: number;
   has_gold: boolean;
   knowledge_base: Array<{
     type: string;
@@ -127,6 +126,76 @@ function App() {
     return { content, bgColor, textColor, borderColor };
   };
 
+  const getPlayingCellDisplay = (val: string, x: number, y: number) => {
+    const isAgent = gameState && gameState.agent_pos[0] === x && gameState.agent_pos[1] === y;
+    
+    let content = '';
+    let bgColor = 'bg-slate-50';
+    let textColor = 'text-slate-600';
+    let borderColor = 'border-slate-200';
+    
+    if (isAgent) {
+      content = '🤖';
+      bgColor = 'bg-blue-200';
+      borderColor = 'border-blue-400';
+    } else if (val === "0") {
+      content = '';
+      bgColor = 'bg-slate-50';
+    } else if (val === "1") {
+      content = '✓';
+      bgColor = 'bg-green-200';
+      textColor = 'text-green-800';
+      borderColor = 'border-green-400';
+    } else if (val === "99") {
+      content = '🏆';
+      bgColor = 'bg-yellow-100';
+      textColor = 'text-yellow-600';
+      borderColor = 'border-yellow-300';
+    } else if (val === "-1") {
+      content = 'W?';
+      bgColor = 'bg-yellow-200';
+      textColor = 'text-yellow-800';
+      borderColor = 'border-yellow-400';
+    } else if (val === "-2") {
+      content = 'P?';
+      bgColor = 'bg-cyan-200';
+      textColor = 'text-cyan-800';
+      borderColor = 'border-cyan-400';
+    } else if (val === "-3") {
+      content = 'W!';
+      bgColor = 'bg-red-200';
+      textColor = 'text-red-800';
+      borderColor = 'border-red-400';
+    } else if (val === "-4") {
+      content = 'P!';
+      bgColor = 'bg-gray-600';
+      textColor = 'text-white';
+      borderColor = 'border-gray-400';
+    } else if (val === "-5") {
+      content = '?';
+      bgColor = 'bg-purple-200';
+      textColor = 'text-purple-800';
+      borderColor = 'border-purple-400';
+    } else if (val === "S") {
+      content = '💀';
+      bgColor = 'bg-purple-100';
+      textColor = 'text-purple-600';
+      borderColor = 'border-purple-300';
+    } else if (val === "B") {
+      content = '💨';
+      bgColor = 'bg-cyan-100';
+      textColor = 'text-cyan-600';
+      borderColor = 'border-cyan-300';
+    } else if (val === "T") {
+      content = '💀💨';
+      bgColor = 'bg-indigo-100';
+      textColor = 'text-indigo-600';
+      borderColor = 'border-indigo-300';
+    }
+    
+    return { content, bgColor, textColor, borderColor };
+  };
+
   const getPerceptsDisplay = () => {
     if (!gameState?.percepts || gameState.percepts.length === 0) {
       return '👁️ No percepts';
@@ -162,7 +231,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-indigo-900 text-white">
-      {/* Header */}
       <header className="border-b border-blue-800 bg-black/20 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
@@ -217,12 +285,11 @@ function App() {
 
       <div className="max-w-7xl mx-auto px-6 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Game Grid */}
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-2 space-y-6">
             <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
               <h2 className="text-xl font-semibold mb-4 flex items-center">
                 <Target className="w-5 h-5 mr-2 text-blue-400" />
-                Wumpus World (10×10)
+                Wumpus World ({gameState.grid.length}×{gameState.grid[0].length})
               </h2>
               
               <div className="grid grid-cols-10 gap-1 max-w-md mx-auto">
@@ -231,9 +298,41 @@ function App() {
                     const { content, bgColor, textColor, borderColor } = getCellDisplay(cell, x, y);
                     return (
                       <div
-                        key={`${x}-${y}`}
-                        className={`w-8 h-8 border-2 ${bgColor} ${borderColor} flex items-center justify-center text-sm font-medium rounded transition-all hover:scale-110 cursor-pointer`}
-                        title={`(${x},${y}) ${cell === '.' ? 'Empty' : cell}`}
+                        key={`main-${x}-${y}`}
+                        className={`w-8 h-8 border-2 ${bgColor} ${textColor} ${borderColor} flex items-center justify-center text-sm font-medium rounded transition-all hover:scale-110 cursor-pointer`}
+                        title={`(${x},${y}) ${cell === '-' ? 'Empty' : cell}`}
+                      >
+                        {content}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+              <h2 className="text-xl font-semibold mb-4 flex items-center">
+                <Brain className="w-5 h-5 mr-2 text-cyan-400" />
+                Agent's Knowledge Grid
+              </h2>
+              
+              <div className="grid grid-cols-10 gap-1 max-w-md mx-auto">
+                {gameState.playing_grid.map((row, y) =>
+                  row.map((val, x) => {
+                    const { content, bgColor, textColor, borderColor } = getPlayingCellDisplay(val, x, y);
+                    return (
+                      <div
+                        key={`playing-${x}-${y}`}
+                        className={`w-8 h-8 border-2 ${bgColor} ${textColor} ${borderColor} flex items-center justify-center text-sm font-medium rounded transition-all hover:scale-110 cursor-pointer`}
+                        title={`(${x},${y}) ${val === "0" ? 'Unknown' : 
+                                 val === "1" ? 'Visited' : 
+                                 val === "99" ? 'Gold' : 
+                                 val === "-1" ? 'Possible Wumpus' : 
+                                 val === "-2" ? 'Possible Pit' : 
+                                 val === "-3" ? 'Confirmed Wumpus' : 
+                                 val === "-4" ? 'Confirmed Pit' : 
+                                 val === "-5" ? 'Possible Wumpus or Pit' :
+                                 val}`}
                       >
                         {content}
                       </div>
@@ -244,9 +343,7 @@ function App() {
             </div>
           </div>
 
-          {/* Agent Status & Knowledge */}
           <div className="space-y-6">
-            {/* Agent Status */}
             <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
               <h3 className="text-lg font-semibold mb-4 flex items-center">
                 <Activity className="w-5 h-5 mr-2 text-green-400" />
@@ -257,18 +354,6 @@ function App() {
                 <div className="flex items-center justify-between">
                   <span className="text-blue-200">Position:</span>
                   <span className="font-mono">({gameState.agent_pos[0]}, {gameState.agent_pos[1]})</span>
-                </div>
-                
-                <div className="flex items-center justify-between">
-                  <span className="text-blue-200">Score:</span>
-                  <span className={`font-bold ${gameState.score >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {gameState.score}
-                  </span>
-                </div>
-                
-                <div className="flex items-center justify-between">
-                  <span className="text-blue-200">Arrows:</span>
-                  <span className="font-mono">{gameState.arrows_left}</span>
                 </div>
                 
                 <div className="flex items-center justify-between">
@@ -294,7 +379,6 @@ function App() {
               </div>
             </div>
 
-            {/* Current Percepts */}
             <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
               <h3 className="text-lg font-semibold mb-3 flex items-center">
                 <MapPin className="w-5 h-5 mr-2 text-purple-400" />
@@ -305,7 +389,6 @@ function App() {
               </div>
             </div>
 
-            {/* Last Action */}
             {lastAction && (
               <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
                 <h3 className="text-lg font-semibold mb-3 text-cyan-400">Last Action</h3>
@@ -326,7 +409,6 @@ function App() {
               </div>
             )}
 
-            {/* Knowledge Base Summary */}
             <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
               <h3 className="text-lg font-semibold mb-3 flex items-center">
                 <Brain className="w-5 h-5 mr-2 text-indigo-400" />
