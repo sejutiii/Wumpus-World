@@ -29,6 +29,7 @@ function App() {
   const [lastAction, setLastAction] = useState<AgentAction | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const wsRef = useRef<WebSocket | null>(null);
+  const intervalRef = useRef<number | null>(null);
 
   useEffect(() => {
     connectWebSocket();
@@ -36,8 +37,27 @@ function App() {
       if (wsRef.current) {
         wsRef.current.close();
       }
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (isRunning && gameState && !gameState.game_over) {
+      intervalRef.current = setInterval(() => {
+        handleStep();
+      }, 500); // Adjust this value (in milliseconds) to control speed; 500ms = 2 steps per second
+    } else if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, [isRunning, gameState]);
 
   const connectWebSocket = () => {
     setConnectionStatus('connecting');
@@ -176,6 +196,11 @@ function App() {
       bgColor = 'bg-purple-200';
       textColor = 'text-purple-800';
       borderColor = 'border-purple-400';
+    } else if (val === "-6") {
+      content = '⚠️';
+      bgColor = 'bg-orange-200';
+      textColor = 'text-orange-800';
+      borderColor = 'border-orange-400';
     } else if (val === "S") {
       content = '💀';
       bgColor = 'bg-purple-100';
@@ -327,11 +352,12 @@ function App() {
                         title={`(${x},${y}) ${val === "0" ? 'Unknown' : 
                                  val === "1" ? 'Visited' : 
                                  val === "99" ? 'Gold' : 
-                                 val === "-1" ? 'Possible Wumpus' : 
-                                 val === "-2" ? 'Possible Pit' : 
-                                 val === "-3" ? 'Confirmed Wumpus' : 
-                                 val === "-4" ? 'Confirmed Pit' : 
-                                 val === "-5" ? 'Possible Wumpus or Pit' :
+                                 val === "-1" ? 'Possible Wumpus (50%)' : 
+                                 val === "-2" ? 'Possible Pit (50%)' : 
+                                 val === "-3" ? 'Confirmed Wumpus (100%)' : 
+                                 val === "-4" ? 'Confirmed Pit (100%)' : 
+                                 val === "-5" ? 'Possible Wumpus or Pit (50%)' :
+                                 val === "-6" ? 'Low Confidence Threat (20%)' :
                                  val}`}
                       >
                         {content}
@@ -420,7 +446,9 @@ function App() {
                   <div key={index} className="text-xs">
                     <div className="flex items-center justify-between mb-1">
                       <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        item.type === 'fact' ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'
+                        item.type === 'fact' ? 'bg-green-500/20 text-green-400' : 
+                        item.type === 'confidence' ? 'bg-blue-500/20 text-blue-400' :
+                        'bg-gray-500/20 text-gray-400'
                       }`}>
                         {item.type}
                       </span>

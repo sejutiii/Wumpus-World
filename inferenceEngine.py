@@ -25,7 +25,7 @@ class InferenceEngine:
                 self.last_inference = "GoldFound ∧ Position(x,y) ≠ (0,0) → MoveToExit"
                 return action
         
-        next_move = self._choose_next_move(current_pos)
+        next_move = self._choose_next_move_with_confidence(current_pos)
         if not next_move:
             self.last_reasoning = "No valid moves available"
             self.last_inference = "NoValidMoves → Stay"
@@ -33,63 +33,171 @@ class InferenceEngine:
         
         nx, ny = next_move
         direction = self._get_direction(current_pos, next_move)
-        cell_value = self.kb.playing_grid[ny][nx]
-        self.last_reasoning = f"Moving to ({nx},{ny}) with priority: {'Safe unvisited' if cell_value == '0' else 'Visited safe' if cell_value == '1' else 'Possible danger'}"
-        self.last_inference = f"SafeOrPrioritized({nx},{ny}) → Move_{direction}"
+        
+        # Enhanced reasoning based on confidence
+        pit_conf = self.kb.get_confidence((nx, ny), 'pit')
+        wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
+        
+        if pit_conf == 0.0 and wumpus_conf == 0.0:
+            self.last_reasoning = f"Moving to safe cell ({nx},{ny})"
+            self.last_inference = f"Safe({nx},{ny}) → Move_{direction}"
+        elif pit_conf == 0.2 or wumpus_conf == 0.2:
+            self.last_reasoning = f"Moving to low-risk cell ({nx},{ny}) - confidence: {max(pit_conf, wumpus_conf)*100}%"
+            self.last_inference = f"LowRisk({nx},{ny}) → Move_{direction}"
+        elif pit_conf == 0.5 or wumpus_conf == 0.5:
+            self.last_reasoning = f"Taking calculated risk at ({nx},{ny}) - confidence: {max(pit_conf, wumpus_conf)*100}%"
+            self.last_inference = f"ModerateRisk({nx},{ny}) → Move_{direction}"
+        else:
+            self.last_reasoning = f"Moving to visited cell ({nx},{ny})"
+            self.last_inference = f"Visited({nx},{ny}) → Move_{direction}"
+        
         return f"MOVE_{direction}"
     
-    def _choose_next_move(self, current_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
+    def _choose_next_move_with_confidence(self, current_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
         adj_cells = self._get_adjacent_cells(current_pos)
         
-        # Priority 1: Safe unvisited cells (0)
+        # Priority 1: Safe unvisited cells (confidence = 0.0 for both pit and wumpus)
         safe_cells = []
         for nx, ny in adj_cells:
-            cell_ref = f"({nx},{ny})"
-            if self.kb.query(f"Safe{cell_ref}") and not self.kb.query(f"Visited{cell_ref}"):
+            if (self.kb.get_confidence((nx, ny), 'pit') == 0.0 and 
+                self.kb.get_confidence((nx, ny), 'wumpus') == 0.0 and
+                not self.kb.query(f"Visited({nx},{ny})")):
                 safe_cells.append((nx, ny))
         
         if safe_cells:
-            self.last_reasoning = "Choosing safe unvisited cell (0)"
+            self.last_reasoning = "Choosing safe unvisited cell"
             return random.choice(safe_cells)
         
-        # Priority 2: Already visited cells (1)
+        # Priority 2: Already visited cells, prioritized by Manhattan distance to nearest unvisited cell
         visited_cells = []
         for nx, ny in adj_cells:
-            cell_ref = f"({nx},{ny})"
-            if self.kb.query(f"Visited{cell_ref}"):
+            if self.kb.query(f"Visited({nx},{ny})"):
                 visited_cells.append((nx, ny))
         
         if visited_cells:
-            self.last_reasoning = "No safe unvisited cells, backtracking to visited safe cell (1)"
+            self.last_reasoning = "No safe unvisited cells, backtracking to visited cell closest to an unvisited cell"
+            # Find the visited cell with the minimum Manhattan distance to any unvisited cell
+            min_distance = float('inf')
+            best_cell = None
+            for visited_cell in visited_cells:
+                # Find all unvisited cells
+                unvisited_cells = []
+                for x in range(self.kb.grid_size):
+                    for y in range(self.kb.grid_size):
+                        if not self.kb.query(f"Visited({x},{y})"):
+                            unvisited_cells.append((x, y))
+                
+                # Calculate minimum Manhattan distance to any unvisited cell
+                for unvisited_cell in unvisited_cells:
+                    distance = abs(visited_cell[0] - unvisited_cell[0]) + abs(visited_cell[1] - unvisited_cell[1])
+                    if distance < min_distance and self._is_safe_path(visited_cell, unvisited_cell):
+                        min_distance = distance
+                        best_cell = visited_cell
+            
+            if best_cell:
+                return best_cell
+            # Fallback to random choice if no safe path is found
             return random.choice(visited_cells)
         
-        # Priority 3: Take calculated risk with possible dangers
-        risk_cells = []
+        # Priority 3: Low confidence threats (20%)
+        low_risk_cells = []
         for nx, ny in adj_cells:
-            cell_ref = f"({nx},{ny})"
-            if self.kb.query(f"PossibleWumpus{cell_ref}") or self.kb.query(f"PossiblePit{cell_ref}"):
-                risk_cells.append((nx, ny))
+            pit_conf = self.kb.get_confidence((nx, ny), 'pit')
+            wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
+            if pit_conf == 0.2 or wumpus_conf == 0.2:
+                low_risk_cells.append((nx, ny))
         
-        if risk_cells:
-            self.last_reasoning = "No safe cells available, risking move to possible danger cell"
-            return random.choice(risk_cells)
+        if low_risk_cells:
+            self.last_reasoning = "Taking low-risk move (20% confidence threat)"
+            return random.choice(low_risk_cells)
+        
+        # Priority 4: Medium confidence threats (50%)
+        medium_risk_cells = []
+        for nx, ny in adj_cells:
+            pit_conf = self.kb.get_confidence((nx, ny), 'pit')
+            wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
+            if pit_conf == 0.5 or wumpus_conf == 0.5:
+                medium_risk_cells.append((nx, ny))
+        
+        if medium_risk_cells:
+            self.last_reasoning = "Taking medium-risk move (50% confidence threat)"
+            return random.choice(medium_risk_cells)
+        
+        # Priority 5: High confidence threats (100%) - last resort
+        high_risk_cells = []
+        for nx, ny in adj_cells:
+            pit_conf = self.kb.get_confidence((nx, ny), 'pit')
+            wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
+            if pit_conf == 1.0 or wumpus_conf == 1.0:
+                high_risk_cells.append((nx, ny))
+        
+        if high_risk_cells:
+            self.last_reasoning = "Last resort: moving to high-risk cell (100% confidence threat)"
+            return random.choice(high_risk_cells)
         
         return None
+    
+    def _is_safe_path(self, start: Tuple[int, int], target: Tuple[int, int]) -> bool:
+        """Check if there is a safe path of visited cells from start to target"""
+        from collections import deque
+        
+        visited = set()
+        queue = deque([start])
+        visited.add(start)
+        
+        while queue:
+            current = queue.popleft()
+            if current == target:
+                return True
+            
+            for next_pos in self._get_adjacent_cells(current):
+                if (next_pos not in visited and 
+                    self.kb.query(f"Visited({next_pos[0]},{next_pos[1]})") and  # Only visited cells
+                    self._is_safe_to_move(next_pos)):  # Ensure the cell is safe
+                    queue.append(next_pos)
+                    visited.add(next_pos)
+        
+        return False
     
     def _find_path_to_exit(self, current_pos: Tuple[int, int]) -> Optional[str]:
         x, y = current_pos
         target_x, target_y = 0, 0
         
-        if x > target_x and self.kb.query(f"Safe({x-1},{y})"):
-            return "MOVE_LEFT"
-        elif x < target_x and self.kb.query(f"Safe({x+1},{y})"):
-            return "MOVE_RIGHT"
-        elif y > target_y and self.kb.query(f"Safe({x},{y-1})"):
-            return "MOVE_UP"
-        elif y < target_y and self.kb.query(f"Safe({x},{y+1})"):
-            return "MOVE_DOWN"
+        # Simple pathfinding towards (0,0) with safety checks
+        if x > target_x:
+            next_pos = (x-1, y)
+            if self._is_safe_to_move(next_pos):
+                return "MOVE_LEFT"
+        elif x < target_x:
+            next_pos = (x+1, y)
+            if self._is_safe_to_move(next_pos):
+                return "MOVE_RIGHT"
+        
+        if y > target_y:
+            next_pos = (x, y-1)
+            if self._is_safe_to_move(next_pos):
+                return "MOVE_UP"
+        elif y < target_y:
+            next_pos = (x, y+1)
+            if self._is_safe_to_move(next_pos):
+                return "MOVE_DOWN"
         
         return None
+    
+    def _is_safe_to_move(self, position: Tuple[int, int]) -> bool:
+        """Check if position is safe to move to"""
+        x, y = position
+        if not (0 <= x < self.kb.grid_size and 0 <= y < self.kb.grid_size):
+            return False
+        
+        # Consider it safe if visited or has low threat confidence
+        if self.kb.query(f"Visited({x},{y})"):
+            return True
+        
+        pit_conf = self.kb.get_confidence((x, y), 'pit')
+        wumpus_conf = self.kb.get_confidence((x, y), 'wumpus')
+        
+        return pit_conf <= 0.2 and wumpus_conf <= 0.2
     
     def _get_direction(self, current_pos: Tuple[int, int], next_pos: Tuple[int, int]) -> str:
         x, y = current_pos
@@ -118,3 +226,14 @@ class InferenceEngine:
     
     def get_last_reasoning(self) -> str:
         return self.last_reasoning
+    
+    def get_confidence_summary(self) -> str:
+        """Get a summary of current confidence levels"""
+        summary = []
+        for y in range(self.kb.grid_size):
+            for x in range(self.kb.grid_size):
+                pit_conf = self.kb.get_confidence((x, y), 'pit')
+                wumpus_conf = self.kb.get_confidence((x, y), 'wumpus')
+                if pit_conf > 0 or wumpus_conf > 0:
+                    summary.append(f"({x},{y}): Pit={pit_conf*100:.0f}%, Wumpus={wumpus_conf*100:.0f}%")
+        return "; ".join(summary) if summary else "No threats detected"
