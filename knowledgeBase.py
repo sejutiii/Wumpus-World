@@ -151,10 +151,13 @@ class PropositionalKB:
             nx, ny = possible_pits[0]
             self.set_confidence((nx, ny), 'pit', 1.0)
             self.add_fact(f"DefinitePit({nx},{ny})")
+            # Propagate threat to adjacent unvisited cells
+            self._propagate_threat((nx, ny), 'pit')
         elif len(unvisited_cells) == 1:
             nx, ny = unvisited_cells[0]
             self.set_confidence((nx, ny), 'pit', 1.0)
             self.add_fact(f"DefinitePit({nx},{ny})")
+            self._propagate_threat((nx, ny), 'pit')
         else:
             for nx, ny in unvisited_cells:
                 if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
@@ -174,10 +177,12 @@ class PropositionalKB:
             nx, ny = possible_wumpus[0]
             self.set_confidence((nx, ny), 'wumpus', 1.0)
             self.add_fact(f"DefiniteWumpus({nx},{ny})")
+            self._propagate_threat((nx, ny), 'wumpus')
         elif len(unvisited_cells) == 1:
             nx, ny = unvisited_cells[0]
             self.set_confidence((nx, ny), 'wumpus', 1.0)
             self.add_fact(f"DefiniteWumpus({nx},{ny})")
+            self._propagate_threat((nx, ny), 'wumpus')
         else:
             for nx, ny in unvisited_cells:
                 if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
@@ -200,6 +205,20 @@ class PropositionalKB:
                 self.set_confidence((nx, ny), 'wumpus', 0.5)
                 self.add_fact(f"PossiblePit({nx},{ny})")
                 self.add_fact(f"PossibleWumpus({nx},{ny})")
+
+    def _propagate_threat(self, position: Tuple[int, int], threat_type: str):
+        """Propagate threat confidence to adjacent unvisited cells"""
+        adj_cells = self._get_adjacent_cells(position)
+        for nx, ny in adj_cells:
+            if not self.query(f"Visited({nx},{ny})") and not self.query(f"Safe({nx},{ny})"):
+                if threat_type == 'pit' and self.get_confidence((nx, ny), 'pit') < 0.5:
+                    self.set_confidence((nx, ny), 'pit', 0.5)
+                    self.add_fact(f"PossiblePit({nx},{ny})")
+                    logger.debug(f"Propagated PossiblePit to ({nx},{ny}) from {position}")
+                elif threat_type == 'wumpus' and self.get_confidence((nx, ny), 'wumpus') < 0.5:
+                    self.set_confidence((nx, ny), 'wumpus', 0.5)
+                    self.add_fact(f"PossibleWumpus({nx},{ny})")
+                    logger.debug(f"Propagated PossibleWumpus to ({nx},{ny}) from {position}")
 
     def update_playing_grid_from_kb(self):
         """Update playing grid based on KB knowledge and confidence"""
