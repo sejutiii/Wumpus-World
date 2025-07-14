@@ -139,100 +139,110 @@ class PropositionalKB:
         """Process breeze percept with logical deduction"""
         adj_cells = self._get_adjacent_cells(position)
         unvisited_cells = [pos for pos in adj_cells if not self.query(f"Visited({pos[0]},{pos[1]})")]
-        
+
         # Check if any adjacent cell is already marked as definite pit
         definite_pits = [pos for pos in adj_cells if self.get_confidence(pos, 'pit') == 1.0]
-        
+
         if definite_pits:
             # We already know where the pit is, lower confidence for others
             for nx, ny in unvisited_cells:
-                if (nx, ny) not in definite_pits:
-                    current_conf = self.get_confidence((nx, ny), 'pit')
-                    if current_conf > 0:
-                        self.set_confidence((nx, ny), 'pit', 0.2)  # Lower confidence
+                # Do not modify if cell is definite wumpus or pit
+                if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
+                    continue
+                current_conf = self.get_confidence((nx, ny), 'pit')
+                if current_conf > 0:
+                    self.set_confidence((nx, ny), 'pit', 0.2)  # Lower confidence
         else:
             # Check if any adjacent cell was previously marked as possible pit
             possible_pits = [pos for pos in adj_cells if self.get_confidence(pos, 'pit') == 0.5]
-            
+
             if len(possible_pits) == 1:
-                # Only one possible pit, mark it as definite
                 nx, ny = possible_pits[0]
                 self.set_confidence((nx, ny), 'pit', 1.0)
                 self.add_fact(f"DefinitePit({nx},{ny})")
             elif len(unvisited_cells) == 1:
-                # Only one unvisited cell, must be the pit
                 nx, ny = unvisited_cells[0]
                 self.set_confidence((nx, ny), 'pit', 1.0)
                 self.add_fact(f"DefinitePit({nx},{ny})")
             else:
-                # Multiple possibilities, mark all as possible pits
                 for nx, ny in unvisited_cells:
+                    # Do not mark as possible pit if already definite wumpus or pit
+                    if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
+                        continue
                     if not self.query(f"Safe({nx},{ny})"):
                         self.set_confidence((nx, ny), 'pit', 0.5)
                         self.add_fact(f"PossiblePit({nx},{ny})")
-    
+
     def _process_stench(self, position: Tuple[int, int]):
         """Process stench percept with logical deduction"""
         adj_cells = self._get_adjacent_cells(position)
         unvisited_cells = [pos for pos in adj_cells if not self.query(f"Visited({pos[0]},{pos[1]})")]
-        
+
         # Check if any adjacent cell is already marked as definite wumpus
         definite_wumpus = [pos for pos in adj_cells if self.get_confidence(pos, 'wumpus') == 1.0]
-        
+
         if definite_wumpus:
             # We already know where the wumpus is, lower confidence for others
             for nx, ny in unvisited_cells:
-                if (nx, ny) not in definite_wumpus:
-                    current_conf = self.get_confidence((nx, ny), 'wumpus')
-                    if current_conf > 0:
-                        self.set_confidence((nx, ny), 'wumpus', 0.2)  # Lower confidence
+                # Do not modify if cell is definite pit or wumpus
+                if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
+                    continue
+                current_conf = self.get_confidence((nx, ny), 'wumpus')
+                if current_conf > 0:
+                    self.set_confidence((nx, ny), 'wumpus', 0.2)  # Lower confidence
         else:
             # Check if any adjacent cell was previously marked as possible wumpus
             possible_wumpus = [pos for pos in adj_cells if self.get_confidence(pos, 'wumpus') == 0.5]
-            
+
             if len(possible_wumpus) == 1:
-                # Only one possible wumpus, mark it as definite
                 nx, ny = possible_wumpus[0]
                 self.set_confidence((nx, ny), 'wumpus', 1.0)
                 self.add_fact(f"DefiniteWumpus({nx},{ny})")
             elif len(unvisited_cells) == 1:
-                # Only one unvisited cell, must be the wumpus
                 nx, ny = unvisited_cells[0]
                 self.set_confidence((nx, ny), 'wumpus', 1.0)
                 self.add_fact(f"DefiniteWumpus({nx},{ny})")
             else:
-                # Multiple possibilities, mark all as possible wumpus
                 for nx, ny in unvisited_cells:
+                    # Do not mark as possible wumpus if already definite pit or wumpus
+                    if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
+                        continue
                     if not self.query(f"Safe({nx},{ny})"):
                         self.set_confidence((nx, ny), 'wumpus', 0.5)
                         self.add_fact(f"PossibleWumpus({nx},{ny})")
-    
+
     def _process_breeze_and_stench(self, position: Tuple[int, int]):
         """Process both breeze and stench percepts"""
         adj_cells = self._get_adjacent_cells(position)
         unvisited_cells = [pos for pos in adj_cells if not self.query(f"Visited({pos[0]},{pos[1]})")]
-        
+
         # Check for definite threats
         definite_pits = [pos for pos in adj_cells if self.get_confidence(pos, 'pit') == 1.0]
         definite_wumpus = [pos for pos in adj_cells if self.get_confidence(pos, 'wumpus') == 1.0]
-        
+
         if definite_pits:
-            # We know where pit is, remaining unvisited cells are possible wumpus
             for nx, ny in unvisited_cells:
+                # Do not mark as possible wumpus if already definite pit or wumpus
+                if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
+                    continue
                 if (nx, ny) not in definite_pits:
                     self.set_confidence((nx, ny), 'wumpus', 0.5)
                     self.add_fact(f"PossibleWumpus({nx},{ny})")
-        
+
         elif definite_wumpus:
-            # We know where wumpus is, remaining unvisited cells are possible pits
             for nx, ny in unvisited_cells:
+                # Do not mark as possible pit if already definite pit or wumpus
+                if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
+                    continue
                 if (nx, ny) not in definite_wumpus:
                     self.set_confidence((nx, ny), 'pit', 0.5)
                     self.add_fact(f"PossiblePit({nx},{ny})")
-        
+
         else:
-            # No definite knowledge, mark all as possible threats
             for nx, ny in unvisited_cells:
+                # Do not mark as possible pit/wumpus if already definite pit or wumpus
+                if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
+                    continue
                 if not self.query(f"Safe({nx},{ny})"):
                     self.set_confidence((nx, ny), 'pit', 0.5)
                     self.set_confidence((nx, ny), 'wumpus', 0.5)
