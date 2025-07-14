@@ -68,78 +68,44 @@ class InferenceEngine:
     def _choose_next_move_with_efficient_search(self, current_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
         adj_cells = self._get_adjacent_cells(current_pos)
         
-        # Priority 1: Safe unvisited cells (confidence = 0.0 for both pit and wumpus)
-        safe_unvisited = []
+        # Get all cells with their safety scores
+        cell_options = []
         for nx, ny in adj_cells:
-            if (self.kb.get_confidence((nx, ny), 'pit') == 0.0 and 
-                self.kb.get_confidence((nx, ny), 'wumpus') == 0.0 and
-                not self.kb.query(f"Visited({nx},{ny})")):
-                safe_unvisited.append((nx, ny))
+            safety_score = self._calculate_safety_score((nx, ny))
+            cell_options.append(((nx, ny), safety_score))
         
-        if safe_unvisited:
-            # Choose the safe unvisited cell that leads to the most exploration potential
-            best_cell = self._select_best_exploration_cell(safe_unvisited, current_pos)
-            self.last_reasoning = f"Choosing safe unvisited cell {best_cell} for optimal exploration"
-            return best_cell
+        # Sort by safety score (higher is safer)
+        cell_options.sort(key=lambda x: x[1], reverse=True)
         
-        # Priority 2: Safe visited cells that lead to unvisited areas (avoid loops)
-        safe_visited = []
-        for nx, ny in adj_cells:
-            if (self.kb.get_confidence((nx, ny), 'pit') == 0.0 and 
-                self.kb.get_confidence((nx, ny), 'wumpus') == 0.0 and
-                self.kb.query(f"Visited({nx},{ny})") and
-                not self._would_create_loop((nx, ny))):
-                safe_visited.append((nx, ny))
+        # Group cells by safety level
+        safest_score = cell_options[0][1] if cell_options else 0
+        safest_cells = [cell for cell, score in cell_options if score == safest_score]
         
-        if safe_visited:
-            # Choose visited cell that's closest to unvisited areas
-            best_cell = self._select_best_backtrack_cell(safe_visited, current_pos)
-            self.last_reasoning = f"Backtracking to safe visited cell {best_cell} to reach unvisited areas"
-            return best_cell
+        # Filter out cells that would create loops from the safest group
+        non_loop_safest = [cell for cell in safest_cells if not self._would_create_loop(cell)]
         
-        # Priority 3: Low confidence threats (20%) - prefer unvisited
-        low_risk_cells = []
-        for nx, ny in adj_cells:
-            pit_conf = self.kb.get_confidence((nx, ny), 'pit')
-            wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
-            if (pit_conf == 0.2 or wumpus_conf == 0.2) and not self._would_create_loop((nx, ny)):
-                low_risk_cells.append((nx, ny))
+        # If we have safe non-loop options, use them
+        if non_loop_safest:
+            return self._select_best_cell_from_group(non_loop_safest, current_pos, safest_score)
         
-        if low_risk_cells:
-            # Prefer unvisited over visited in low-risk cells
-            unvisited_low_risk = [cell for cell in low_risk_cells if not self.kb.query(f"Visited({cell[0]},{cell[1]})")]
-            if unvisited_low_risk:
-                best_cell = self._select_best_exploration_cell(unvisited_low_risk, current_pos)
-                self.last_reasoning = f"Taking low-risk move to unvisited cell {best_cell}"
-                return best_cell
-            else:
-                self.last_reasoning = "Taking low-risk move to visited cell"
-                return random.choice(low_risk_cells)
+        # If all safest cells create loops, try the next safety level
+        if len(cell_options) > 1:
+            second_safest_score = None
+            for cell, score in cell_options:
+                if score < safest_score:
+                    second_safest_score = score
+                    break
+            
+            if second_safest_score is not None:
+                second_safest_cells = [cell for cell, score in cell_options if score == second_safest_score]
+                non_loop_second = [cell for cell in second_safest_cells if not self._would_create_loop(cell)]
+                
+                if non_loop_second:
+                    return self._select_best_cell_from_group(non_loop_second, current_pos, second_safest_score)
         
-        # Priority 4: Medium confidence threats (50%) - avoid loops
-        medium_risk_cells = []
-        for nx, ny in adj_cells:
-            pit_conf = self.kb.get_confidence((nx, ny), 'pit')
-            wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
-            if (pit_conf == 0.5 or wumpus_conf == 0.5) and not self._would_create_loop((nx, ny)):
-                medium_risk_cells.append((nx, ny))
-        
-        if medium_risk_cells:
-            # Prefer unvisited over visited in medium-risk cells
-            unvisited_medium_risk = [cell for cell in medium_risk_cells if not self.kb.query(f"Visited({cell[0]},{cell[1]})")]
-            if unvisited_medium_risk:
-                best_cell = self._select_best_exploration_cell(unvisited_medium_risk, current_pos)
-                self.last_reasoning = f"Taking medium-risk move to unvisited cell {best_cell}"
-                return best_cell
-            else:
-                self.last_reasoning = "Taking medium-risk move to visited cell"
-                return random.choice(medium_risk_cells)
-        
-        # Priority 5: Any non-loop cell (including high-risk as last resort)
-        non_loop_cells = [cell for cell in adj_cells if not self._would_create_loop(cell)]
-        if non_loop_cells:
-            self.last_reasoning = "Last resort: choosing any non-loop cell"
-            return random.choice(non_loop_cells)
+        # If we still have no options, allow loops but prefer safer cells
+        if safest_cells:
+            return self._select_best_cell_from_group(safest_cells, current_pos, safest_score)
         
         # Final fallback: any adjacent cell
         if adj_cells:
@@ -147,6 +113,114 @@ class InferenceEngine:
             return random.choice(adj_cells)
         
         return None
+    
+    def _calculate_safety_score(self, position: Tuple[int, int]) -> float:
+        """Calculate safety score for a position (higher = safer)"""
+        x, y = position
+        
+        # Check if position is out of bounds
+        if not (0 <= x < self.kb.grid_size and 0 <= y < self.kb.grid_size):
+            return -1000  # Invalid position
+        
+        pit_conf = self.kb.get_confidence((x, y), 'pit')
+        wumpus_conf = self.kb.get_confidence((x, y), 'wumpus')
+        
+        # Base safety score (higher confidence = lower safety)
+        max_threat = max(pit_conf, wumpus_conf)
+        
+        # Safety levels (higher score = safer):
+        # 1000: Completely safe (0% threat)
+        # 800: Very safe (visited, known safe)
+        # 200: Low risk (20% threat)
+        # 50: Medium risk (50% threat)  
+        # 0: High risk (100% threat)
+        
+        if max_threat == 0.0:
+            # Completely safe
+            if self.kb.query(f"Visited({x},{y})"):
+                return 800  # Safe and visited
+            else:
+                return 1000  # Safe and unvisited (best for exploration)
+        elif max_threat == 0.2:
+            # Low risk
+            if self.kb.query(f"Visited({x},{y})"):
+                return 180  # Low risk, visited
+            else:
+                return 200  # Low risk, unvisited
+        elif max_threat == 0.5:
+            # Medium risk
+            if self.kb.query(f"Visited({x},{y})"):
+                return 30  # Medium risk, visited
+            else:
+                return 50  # Medium risk, unvisited
+        elif max_threat == 1.0:
+            # High risk
+            if self.kb.query(f"Visited({x},{y})"):
+                return -10  # High risk, visited
+            else:
+                return 0  # High risk, unvisited
+        else:
+            # Unknown threat level
+            return max(0, 100 - int(max_threat * 100))
+    
+    def _select_best_cell_from_group(self, candidates: List[Tuple[int, int]], current_pos: Tuple[int, int], safety_score: float) -> Tuple[int, int]:
+        """Select the best cell from a group of equally safe candidates"""
+        if not candidates:
+            return None
+        
+        if len(candidates) == 1:
+            cell = candidates[0]
+            self._set_reasoning_for_cell(cell, safety_score)
+            return cell
+        
+        # For safe cells (score >= 800), prioritize by exploration potential
+        if safety_score >= 800:
+            unvisited_candidates = [cell for cell in candidates if not self.kb.query(f"Visited({cell[0]},{cell[1]})")]
+            if unvisited_candidates:
+                best_cell = self._select_best_exploration_cell(unvisited_candidates, current_pos)
+                self._set_reasoning_for_cell(best_cell, safety_score)
+                return best_cell
+            else:
+                # All are visited, choose closest to unvisited areas
+                best_cell = self._select_best_backtrack_cell(candidates, current_pos)
+                self._set_reasoning_for_cell(best_cell, safety_score)
+                return best_cell
+        
+        # For risky cells, prefer unvisited for exploration
+        unvisited_candidates = [cell for cell in candidates if not self.kb.query(f"Visited({cell[0]},{cell[1]})")]
+        if unvisited_candidates:
+            best_cell = self._select_best_exploration_cell(unvisited_candidates, current_pos)
+            self._set_reasoning_for_cell(best_cell, safety_score)
+            return best_cell
+        
+        # All are visited, choose randomly
+        best_cell = random.choice(candidates)
+        self._set_reasoning_for_cell(best_cell, safety_score)
+        return best_cell
+    
+    def _set_reasoning_for_cell(self, cell: Tuple[int, int], safety_score: float):
+        """Set appropriate reasoning message based on cell safety score"""
+        x, y = cell
+        pit_conf = self.kb.get_confidence((x, y), 'pit')
+        wumpus_conf = self.kb.get_confidence((x, y), 'wumpus')
+        is_visited = self.kb.query(f"Visited({x},{y})")
+        
+        if safety_score >= 1000:
+            self.last_reasoning = f"Moving to completely safe unvisited cell ({x},{y}) - optimal for exploration"
+        elif safety_score >= 800:
+            self.last_reasoning = f"Moving to safe visited cell ({x},{y}) - strategic backtrack"
+        elif safety_score >= 180:
+            if is_visited:
+                self.last_reasoning = f"Moving to low-risk visited cell ({x},{y}) - {max(pit_conf, wumpus_conf)*100:.0f}% threat"
+            else:
+                self.last_reasoning = f"Moving to low-risk unvisited cell ({x},{y}) - {max(pit_conf, wumpus_conf)*100:.0f}% threat"
+        elif safety_score >= 30:
+            if is_visited:
+                self.last_reasoning = f"Taking calculated risk to visited cell ({x},{y}) - {max(pit_conf, wumpus_conf)*100:.0f}% threat"
+            else:
+                self.last_reasoning = f"Taking calculated risk to unvisited cell ({x},{y}) - {max(pit_conf, wumpus_conf)*100:.0f}% threat"
+        else:
+            self.last_reasoning = f"High-risk move to cell ({x},{y}) - {max(pit_conf, wumpus_conf)*100:.0f}% threat"
     
     def _select_best_exploration_cell(self, candidates: List[Tuple[int, int]], current_pos: Tuple[int, int]) -> Tuple[int, int]:
         """Select the candidate cell that leads to the most exploration potential"""
@@ -185,8 +259,6 @@ class InferenceEngine:
                 best_cell = cell
         
         return best_cell if best_cell else candidates[0]
-    
-    def _calculate_exploration_score(self, position: Tuple[int, int]) -> int:
         """Calculate exploration potential score for a position"""
         x, y = position
         score = 0
@@ -280,19 +352,20 @@ class InferenceEngine:
         return None
     
     def _is_safe_to_move(self, position: Tuple[int, int]) -> bool:
-        """Check if position is safe to move to"""
+        """Check if position is safe to move to (stricter safety check)"""
         x, y = position
         if not (0 <= x < self.kb.grid_size and 0 <= y < self.kb.grid_size):
             return False
         
-        # Consider it safe if visited or has low threat confidence
+        # Consider it safe only if visited or has very low threat confidence
         if self.kb.query(f"Visited({x},{y})"):
             return True
         
         pit_conf = self.kb.get_confidence((x, y), 'pit')
         wumpus_conf = self.kb.get_confidence((x, y), 'wumpus')
         
-        return pit_conf <= 0.2 and wumpus_conf <= 0.2
+        # Only consider completely safe (0% threat) as safe for pathfinding
+        return pit_conf == 0.0 and wumpus_conf == 0.0
     
     def _get_direction(self, current_pos: Tuple[int, int], next_pos: Tuple[int, int]) -> str:
         x, y = current_pos
