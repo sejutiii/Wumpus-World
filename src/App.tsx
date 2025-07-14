@@ -48,7 +48,7 @@ function App() {
     if (isRunning && gameState && !gameState.game_over) {
       intervalRef.current = setInterval(() => {
         handleStep();
-      }, 500); // Adjust this value (in milliseconds) to control speed; 500ms = 2 steps per second
+      }, 200); // Reduced from 500ms to 100ms for faster simulation
     } else if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
