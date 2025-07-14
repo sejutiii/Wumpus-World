@@ -30,6 +30,7 @@ function App() {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const wsRef = useRef<WebSocket | null>(null);
   const intervalRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     connectWebSocket();
@@ -113,6 +114,23 @@ function App() {
       await fetch(`http://${window.location.hostname}:8000/api/step`, { method: 'POST' });
     } catch (error) {
       console.error('Failed to execute step:', error);
+    }
+  };
+
+  const handleUploadEnv = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      await fetch(`http://${window.location.hostname}:8000/api/upload_env`, {
+        method: "POST",
+        body: formData,
+      });
+      setIsRunning(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (error) {
+      alert("Failed to upload environment file.");
     }
   };
 
@@ -303,6 +321,17 @@ function App() {
                 <Zap className="w-4 h-4" />
                 <span>Step</span>
               </button>
+
+              <label className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors cursor-pointer">
+                <input
+                  type="file"
+                  accept=".txt"
+                  ref={fileInputRef}
+                  onChange={handleUploadEnv}
+                  style={{ display: "none" }}
+                />
+                <span>Upload Env</span>
+              </label>
             </div>
           </div>
         </div>
