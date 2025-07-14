@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import asyncio
@@ -127,6 +127,26 @@ async def websocket_endpoint(websocket: WebSocket):
                 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.post("/api/upload_env")
+async def upload_env(file: UploadFile = File(...)):
+    if not file.filename.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Only .txt files are supported")
+    content = await file.read()
+    try:
+        lines = content.decode("utf-8").strip().splitlines()
+        grid = [list(line.strip()) for line in lines if line.strip()]
+        # Validate grid is square and not empty
+        if not grid or any(len(row) != len(grid) for row in grid):
+            raise ValueError("Grid must be square and non-empty")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid file format: {e}")
+    game_state.reset(grid)
+    await manager.broadcast({
+        "type": "game_state",
+        "data": get_game_state_data()
+    })
+    return {"status": "Environment uploaded and game reset"}
 
 def get_game_state_data():
     if not game_state.environment:
