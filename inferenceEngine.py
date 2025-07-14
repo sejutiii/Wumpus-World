@@ -1,5 +1,6 @@
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Set
 import random
+from collections import deque
 from knowledgeBase import PropositionalKB
 
 class InferenceEngine:
@@ -8,6 +9,8 @@ class InferenceEngine:
         self.last_inference = ""
         self.last_reasoning = ""
         self.visited_positions = [(0, 0)]
+        self.move_history = []  # Track recent moves for loop detection
+        self.max_history_length = 8  # Adjust based on grid size
         
     def determine_next_action(self, current_pos: Tuple[int, int], percepts: List[str], grid_size: int) -> str:
         self.last_reasoning = ""
@@ -25,7 +28,7 @@ class InferenceEngine:
                 self.last_inference = "GoldFound ∧ Position(x,y) ≠ (0,0) → MoveToExit"
                 return action
         
-        next_move = self._choose_next_move_with_confidence(current_pos)
+        next_move = self._choose_next_move_with_efficient_search(current_pos)
         if not next_move:
             self.last_reasoning = "No valid moves available"
             self.last_inference = "NoValidMoves → Stay"
@@ -34,13 +37,22 @@ class InferenceEngine:
         nx, ny = next_move
         direction = self._get_direction(current_pos, next_move)
         
-        # Enhanced reasoning based on confidence
+        # Update move history for loop detection
+        self.move_history.append(current_pos)
+        if len(self.move_history) > self.max_history_length:
+            self.move_history.pop(0)
+        
+        # Enhanced reasoning based on confidence and search strategy
         pit_conf = self.kb.get_confidence((nx, ny), 'pit')
         wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
         
         if pit_conf == 0.0 and wumpus_conf == 0.0:
-            self.last_reasoning = f"Moving to safe cell ({nx},{ny})"
-            self.last_inference = f"Safe({nx},{ny}) → Move_{direction}"
+            if not self.kb.query(f"Visited({nx},{ny})"):
+                self.last_reasoning = f"Moving to safe unvisited cell ({nx},{ny}) - optimal for exploration"
+                self.last_inference = f"Safe({nx},{ny}) ∧ ¬Visited({nx},{ny}) → Move_{direction}"
+            else:
+                self.last_reasoning = f"Moving to safe visited cell ({nx},{ny}) - strategic backtrack"
+                self.last_inference = f"Safe({nx},{ny}) ∧ Visited({nx},{ny}) → Move_{direction}"
         elif pit_conf == 0.2 or wumpus_conf == 0.2:
             self.last_reasoning = f"Moving to low-risk cell ({nx},{ny}) - confidence: {max(pit_conf, wumpus_conf)*100}%"
             self.last_inference = f"LowRisk({nx},{ny}) → Move_{direction}"
@@ -53,109 +65,192 @@ class InferenceEngine:
         
         return f"MOVE_{direction}"
     
-    def _choose_next_move_with_confidence(self, current_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
+    def _choose_next_move_with_efficient_search(self, current_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
         adj_cells = self._get_adjacent_cells(current_pos)
         
         # Priority 1: Safe unvisited cells (confidence = 0.0 for both pit and wumpus)
-        safe_cells = []
+        safe_unvisited = []
         for nx, ny in adj_cells:
             if (self.kb.get_confidence((nx, ny), 'pit') == 0.0 and 
                 self.kb.get_confidence((nx, ny), 'wumpus') == 0.0 and
                 not self.kb.query(f"Visited({nx},{ny})")):
-                safe_cells.append((nx, ny))
+                safe_unvisited.append((nx, ny))
         
-        if safe_cells:
-            self.last_reasoning = "Choosing safe unvisited cell"
-            return random.choice(safe_cells)
+        if safe_unvisited:
+            # Choose the safe unvisited cell that leads to the most exploration potential
+            best_cell = self._select_best_exploration_cell(safe_unvisited, current_pos)
+            self.last_reasoning = f"Choosing safe unvisited cell {best_cell} for optimal exploration"
+            return best_cell
         
-        # Priority 2: Already visited cells, prioritized by Manhattan distance to nearest unvisited cell
-        visited_cells = []
+        # Priority 2: Safe visited cells that lead to unvisited areas (avoid loops)
+        safe_visited = []
         for nx, ny in adj_cells:
-            if self.kb.query(f"Visited({nx},{ny})"):
-                visited_cells.append((nx, ny))
+            if (self.kb.get_confidence((nx, ny), 'pit') == 0.0 and 
+                self.kb.get_confidence((nx, ny), 'wumpus') == 0.0 and
+                self.kb.query(f"Visited({nx},{ny})") and
+                not self._would_create_loop((nx, ny))):
+                safe_visited.append((nx, ny))
         
-        if visited_cells:
-            self.last_reasoning = "No safe unvisited cells, backtracking to visited cell closest to an unvisited cell"
-            # Find the visited cell with the minimum Manhattan distance to any unvisited cell
-            min_distance = float('inf')
-            best_cell = None
-            for visited_cell in visited_cells:
-                # Find all unvisited cells
-                unvisited_cells = []
-                for x in range(self.kb.grid_size):
-                    for y in range(self.kb.grid_size):
-                        if not self.kb.query(f"Visited({x},{y})"):
-                            unvisited_cells.append((x, y))
-                
-                # Calculate minimum Manhattan distance to any unvisited cell
-                for unvisited_cell in unvisited_cells:
-                    distance = abs(visited_cell[0] - unvisited_cell[0]) + abs(visited_cell[1] - unvisited_cell[1])
-                    if distance < min_distance and self._is_safe_path(visited_cell, unvisited_cell):
-                        min_distance = distance
-                        best_cell = visited_cell
-            
-            if best_cell:
-                return best_cell
-            # Fallback to random choice if no safe path is found
-            return random.choice(visited_cells)
+        if safe_visited:
+            # Choose visited cell that's closest to unvisited areas
+            best_cell = self._select_best_backtrack_cell(safe_visited, current_pos)
+            self.last_reasoning = f"Backtracking to safe visited cell {best_cell} to reach unvisited areas"
+            return best_cell
         
-        # Priority 3: Low confidence threats (20%)
+        # Priority 3: Low confidence threats (20%) - prefer unvisited
         low_risk_cells = []
         for nx, ny in adj_cells:
             pit_conf = self.kb.get_confidence((nx, ny), 'pit')
             wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
-            if pit_conf == 0.2 or wumpus_conf == 0.2:
+            if (pit_conf == 0.2 or wumpus_conf == 0.2) and not self._would_create_loop((nx, ny)):
                 low_risk_cells.append((nx, ny))
         
         if low_risk_cells:
-            self.last_reasoning = "Taking low-risk move (20% confidence threat)"
-            return random.choice(low_risk_cells)
+            # Prefer unvisited over visited in low-risk cells
+            unvisited_low_risk = [cell for cell in low_risk_cells if not self.kb.query(f"Visited({cell[0]},{cell[1]})")]
+            if unvisited_low_risk:
+                best_cell = self._select_best_exploration_cell(unvisited_low_risk, current_pos)
+                self.last_reasoning = f"Taking low-risk move to unvisited cell {best_cell}"
+                return best_cell
+            else:
+                self.last_reasoning = "Taking low-risk move to visited cell"
+                return random.choice(low_risk_cells)
         
-        # Priority 4: Medium confidence threats (50%)
+        # Priority 4: Medium confidence threats (50%) - avoid loops
         medium_risk_cells = []
         for nx, ny in adj_cells:
             pit_conf = self.kb.get_confidence((nx, ny), 'pit')
             wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
-            if pit_conf == 0.5 or wumpus_conf == 0.5:
+            if (pit_conf == 0.5 or wumpus_conf == 0.5) and not self._would_create_loop((nx, ny)):
                 medium_risk_cells.append((nx, ny))
         
         if medium_risk_cells:
-            self.last_reasoning = "Taking medium-risk move (50% confidence threat)"
-            return random.choice(medium_risk_cells)
+            # Prefer unvisited over visited in medium-risk cells
+            unvisited_medium_risk = [cell for cell in medium_risk_cells if not self.kb.query(f"Visited({cell[0]},{cell[1]})")]
+            if unvisited_medium_risk:
+                best_cell = self._select_best_exploration_cell(unvisited_medium_risk, current_pos)
+                self.last_reasoning = f"Taking medium-risk move to unvisited cell {best_cell}"
+                return best_cell
+            else:
+                self.last_reasoning = "Taking medium-risk move to visited cell"
+                return random.choice(medium_risk_cells)
         
-        # Priority 5: High confidence threats (100%) - last resort
-        high_risk_cells = []
-        for nx, ny in adj_cells:
-            pit_conf = self.kb.get_confidence((nx, ny), 'pit')
-            wumpus_conf = self.kb.get_confidence((nx, ny), 'wumpus')
-            if pit_conf == 1.0 or wumpus_conf == 1.0:
-                high_risk_cells.append((nx, ny))
+        # Priority 5: Any non-loop cell (including high-risk as last resort)
+        non_loop_cells = [cell for cell in adj_cells if not self._would_create_loop(cell)]
+        if non_loop_cells:
+            self.last_reasoning = "Last resort: choosing any non-loop cell"
+            return random.choice(non_loop_cells)
         
-        if high_risk_cells:
-            self.last_reasoning = "Last resort: moving to high-risk cell (100% confidence threat)"
-            return random.choice(high_risk_cells)
+        # Final fallback: any adjacent cell
+        if adj_cells:
+            self.last_reasoning = "Emergency fallback: choosing any adjacent cell"
+            return random.choice(adj_cells)
         
         return None
     
-    def _is_safe_path(self, start: Tuple[int, int], target: Tuple[int, int]) -> bool:
-        """Check if there is a safe path of visited cells from start to target"""
-        from collections import deque
+    def _select_best_exploration_cell(self, candidates: List[Tuple[int, int]], current_pos: Tuple[int, int]) -> Tuple[int, int]:
+        """Select the candidate cell that leads to the most exploration potential"""
+        if not candidates:
+            return None
         
-        visited = set()
-        queue = deque([start])
-        visited.add(start)
+        if len(candidates) == 1:
+            return candidates[0]
+        
+        best_cell = None
+        best_score = -1
+        
+        for cell in candidates:
+            score = self._calculate_exploration_score(cell)
+            if score > best_score:
+                best_score = score
+                best_cell = cell
+        
+        return best_cell if best_cell else candidates[0]
+    
+    def _select_best_backtrack_cell(self, candidates: List[Tuple[int, int]], current_pos: Tuple[int, int]) -> Tuple[int, int]:
+        """Select the visited cell that's closest to unvisited areas"""
+        if not candidates:
+            return None
+        
+        if len(candidates) == 1:
+            return candidates[0]
+        
+        best_cell = None
+        best_distance = float('inf')
+        
+        for cell in candidates:
+            distance = self._distance_to_nearest_unvisited(cell)
+            if distance < best_distance:
+                best_distance = distance
+                best_cell = cell
+        
+        return best_cell if best_cell else candidates[0]
+    
+    def _calculate_exploration_score(self, position: Tuple[int, int]) -> int:
+        """Calculate exploration potential score for a position"""
+        x, y = position
+        score = 0
+        
+        # Count adjacent unvisited safe cells
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nx, ny = x + dx, y + dy
+            if (0 <= nx < self.kb.grid_size and 0 <= ny < self.kb.grid_size and
+                not self.kb.query(f"Visited({nx},{ny})") and
+                self.kb.get_confidence((nx, ny), 'pit') <= 0.2 and
+                self.kb.get_confidence((nx, ny), 'wumpus') <= 0.2):
+                score += 3
+        
+        # Count nearby unvisited cells (2-step distance)
+        for dx in [-2, -1, 0, 1, 2]:
+            for dy in [-2, -1, 0, 1, 2]:
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = x + dx, y + dy
+                if (0 <= nx < self.kb.grid_size and 0 <= ny < self.kb.grid_size and
+                    not self.kb.query(f"Visited({nx},{ny})")):
+                    score += 1
+        
+        return score
+    
+    def _distance_to_nearest_unvisited(self, position: Tuple[int, int]) -> int:
+        """Calculate distance to nearest unvisited cell using BFS"""
+        queue = deque([(position, 0)])
+        visited = {position}
         
         while queue:
-            current = queue.popleft()
-            if current == target:
-                return True
+            (x, y), dist = queue.popleft()
             
-            for next_pos in self._get_adjacent_cells(current):
-                if (next_pos not in visited and 
-                    self.kb.query(f"Visited({next_pos[0]},{next_pos[1]})") and  # Only visited cells
-                    self._is_safe_to_move(next_pos)):  # Ensure the cell is safe
-                    queue.append(next_pos)
-                    visited.add(next_pos)
+            # Check if this position is unvisited
+            if not self.kb.query(f"Visited({x},{y})"):
+                return dist
+            
+            # Add adjacent cells
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nx, ny = x + dx, y + dy
+                if (0 <= nx < self.kb.grid_size and 0 <= ny < self.kb.grid_size and
+                    (nx, ny) not in visited):
+                    visited.add((nx, ny))
+                    queue.append(((nx, ny), dist + 1))
+        
+        return float('inf')  # No unvisited cells found
+    
+    def _would_create_loop(self, position: Tuple[int, int]) -> bool:
+        """Check if moving to this position would create a loop"""
+        if len(self.move_history) < 4:  # Need at least 4 moves to detect a loop
+            return False
+        
+        # Check if we've been oscillating between positions
+        recent_positions = self.move_history[-4:]
+        if recent_positions.count(position) >= 2:
+            return True
+        
+        # Check for patterns in recent moves
+        if len(self.move_history) >= 6:
+            # Check for A-B-A-B pattern
+            if (self.move_history[-2] == position and 
+                self.move_history[-4] == position and
+                self.move_history[-6] == position):
+                return True
         
         return False
     
