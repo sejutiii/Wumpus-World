@@ -4,6 +4,11 @@ import json
 import asyncio
 from typing import List, Optional
 from pydantic import BaseModel
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 from environment import WumpusEnvironment
 from knowledgeBase import PropositionalKB
@@ -80,6 +85,7 @@ async def reset_game(env_request: Optional[EnvironmentRequest] = None):
     env_data = env_request.grid if env_request else None
     game_state.reset(env_data)
     
+    logger.info(f"Game reset with environment: {env_data or 'default'}")
     await manager.broadcast({
         "type": "game_state",
         "data": get_game_state_data()
@@ -92,6 +98,7 @@ async def start_game():
     if not game_state.environment:
         game_state.reset()
     
+    logger.info("AI agent started")
     asyncio.create_task(run_ai_agent())
     
     return {"status": "AI agent started"}
@@ -138,12 +145,12 @@ async def upload_env(file: UploadFile = File(...)):
     try:
         lines = content.decode("utf-8").strip().splitlines()
         grid = [list(line.strip()) for line in lines if line.strip()]
-        # Validate grid is square and not empty
         if not grid or any(len(row) != len(grid) for row in grid):
             raise ValueError("Grid must be square and non-empty")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid file format: {e}")
     game_state.reset(grid)
+    logger.info(f"Environment uploaded: {grid}")
     await manager.broadcast({
         "type": "game_state",
         "data": get_game_state_data()
@@ -165,15 +172,13 @@ def get_game_state_data():
             "game_status": "playing"
         }
     
-    # Debug: print the full grid to the server console after reset
+    logger.debug(f"Game state data requested - Agent at {game_state.agent_pos}")
     print("Full environment grid:")
     for row in game_state.environment.grid:
         print(" ".join(row))
     print("-" * 40)
     return {
-        # Show the full environment grid for the Wumpus World grid
         "grid": game_state.environment.grid,
-        # Agent's knowledge grid
         "playing_grid": game_state.knowledge_base.get_playing_grid(),
         "agent_pos": list(game_state.agent_pos),
         "agent_alive": game_state.agent_alive,
@@ -187,22 +192,27 @@ def get_game_state_data():
 
 async def run_ai_agent():
     while not game_state.game_over and game_state.agent_alive:
+        logger.info(f"Running AI agent step at position {game_state.agent_pos}")
         await execute_agent_step()
         await asyncio.sleep(1.0)
 
 async def execute_agent_step():
     if game_state.game_over or not game_state.agent_alive:
+        logger.warning("Attempted step in game over or agent dead state")
         return
     
+    # Update knowledge base with current position and percepts first
     percepts = game_state.environment.get_percepts(game_state.agent_pos)
-    
+    logger.debug(f"Percepts at {game_state.agent_pos}: {percepts}")
     game_state.knowledge_base.update_knowledge_base(game_state.agent_pos, percepts)
     
+    # Determine action after the knowledge base is updated
     action = game_state.inference_engine.determine_next_action(
         game_state.agent_pos, 
         percepts,
         game_state.environment.grid_size
     )
+    logger.info(f"Action chosen: {action} at {game_state.agent_pos} with percepts {percepts}")
     
     if not game_state.has_gold:
         if action == "GRAB" and "Glitter" in percepts:
@@ -210,6 +220,7 @@ async def execute_agent_step():
             game_state.knowledge_base.set_gold_found(game_state.agent_pos)
             game_state.game_over = True
             game_state.game_status = "won"
+            logger.info("Gold grabbed, game won")
     # Only allow movement after gold is found
     if action.startswith("MOVE_"):
         direction = action.split("_")[1]
@@ -218,19 +229,23 @@ async def execute_agent_step():
             game_state.agent_pos = new_pos
             game_state.visited_cells.add(new_pos)
             cell_contents = game_state.environment.get_cell_contents(new_pos)
+            logger.debug(f"Moved to {new_pos}, contents: {cell_contents}")
             if "P" in cell_contents or "W" in cell_contents:
                 game_state.agent_alive = False
                 game_state.game_over = True
                 game_state.game_status = "lost"
+                logger.error(f"Agent defeated at {new_pos} by {cell_contents}")
     # Check stopping conditions
     if game_state.has_gold and game_state.agent_pos == (0, 0):
         game_state.game_over = True
         if game_state.game_status != "won":
             game_state.game_status = "won"
+            logger.info("Returned to (0,0) with gold, game won")
     elif len(game_state.visited_cells) == game_state.environment.grid_size * game_state.environment.grid_size:
         game_state.game_over = True
         if game_state.game_status == "playing":
             game_state.game_status = "lost"
+            logger.info("All cells visited, game lost")
     
     await manager.broadcast({
         "type": "game_state",

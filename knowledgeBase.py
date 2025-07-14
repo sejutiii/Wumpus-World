@@ -1,5 +1,10 @@
 from typing import List, Tuple, Set, Dict
 from collections import deque
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class PropositionalKB:
     def __init__(self, grid_size: int):
@@ -9,34 +14,35 @@ class PropositionalKB:
         self.playing_grid = [["0" for _ in range(grid_size)] for _ in range(grid_size)]
         self.playing_grid[0][0] = "1"
         self.gold_cell = None
-        
-        # Confidence tracking for cells
         self.cell_confidence = {}  # (x,y) -> {'pit': confidence, 'wumpus': confidence}
-        
+
     def add_fact(self, fact: str):
         """Add a fact to the knowledge base"""
+        logger.debug(f"Adding fact: {fact}")
         self.facts.add(fact)
-        
+
     def add_rule(self, premise, conclusion):
         """Add an inference rule: premise → conclusion"""
+        logger.debug(f"Adding rule: {premise} → {conclusion}")
         self.rules.append((premise, conclusion))
-        
+
     def query(self, fact: str) -> bool:
         """Check if a fact can be inferred"""
         return fact in self.facts
-        
+
     def get_confidence(self, position: Tuple[int, int], threat_type: str) -> float:
         """Get confidence level for a threat at position"""
         if position not in self.cell_confidence:
             return 0.0
         return self.cell_confidence[position].get(threat_type, 0.0)
-    
+
     def set_confidence(self, position: Tuple[int, int], threat_type: str, confidence: float):
         """Set confidence level for a threat at position"""
         if position not in self.cell_confidence:
             self.cell_confidence[position] = {'pit': 0.0, 'wumpus': 0.0}
+        logger.debug(f"Setting {threat_type} confidence at {position} to {confidence}")
         self.cell_confidence[position][threat_type] = confidence
-        
+
     def forward_chain(self):
         """Forward chaining inference"""
         changed = True
@@ -44,19 +50,16 @@ class PropositionalKB:
             changed = False
             for premise, conclusion in self.rules:
                 if self.can_infer(premise) and conclusion not in self.facts:
+                    logger.debug(f"Inferring {conclusion} from {premise}")
                     self.facts.add(conclusion)
                     changed = True
-                    
+
     def can_infer(self, premise) -> bool:
         """Check if premise can be satisfied"""
-        if isinstance(premise, str):
-            return premise in self.facts
-        elif isinstance(premise, tuple) and premise[0] == 'AND':
-            return all(self.can_infer(p) for p in premise[1:])
-        elif isinstance(premise, tuple) and premise[0] == 'OR':
-            return any(self.can_infer(p) for p in premise[1:])
-        return False
-    
+        return (isinstance(premise, str) and premise in self.facts) or \
+               (isinstance(premise, tuple) and premise[0] == 'AND' and all(self.can_infer(p) for p in premise[1:])) or \
+               (isinstance(premise, tuple) and premise[0] == 'OR' and any(self.can_infer(p) for p in premise[1:]))
+
     def add_wumpus_rules(self):
         """Add domain-specific rules for Wumpus World"""
         for y in range(self.grid_size):
@@ -75,12 +78,13 @@ class PropositionalKB:
                     for nx, ny in adj_cells:
                         premise = ('AND', f"NoPit({nx},{ny})", f"NoWumpus({nx},{ny})")
                         self.add_rule(premise, f"Safe({nx},{ny})")
-    
+
     def update_knowledge_base(self, position: Tuple[int, int], percepts: List[str]):
         """Update KB based on current percepts with enhanced logical deduction"""
         x, y = position
         current_cell = f"({x},{y})"
         
+        logger.info(f"Updating KB at {position} with percepts: {percepts}")
         # Determine percept type
         if not percepts or "Glitter" in percepts:
             percept = "-" if not percepts else "G"
@@ -126,7 +130,8 @@ class PropositionalKB:
         
         self.forward_chain()
         self.update_playing_grid_from_kb()
-    
+        logger.debug(f"KB updated, confidence for (1,2): {self.get_confidence((1,2), 'wumpus')}")
+
     def _mark_adjacent_safe(self, position: Tuple[int, int]):
         """Mark all adjacent cells as safe"""
         adj_cells = self._get_adjacent_cells(position)
@@ -134,13 +139,12 @@ class PropositionalKB:
             self.add_fact(f"Safe({nx},{ny})")
             self.set_confidence((nx, ny), 'pit', 0.0)
             self.set_confidence((nx, ny), 'wumpus', 0.0)
-    
+
     def _process_breeze(self, position: Tuple[int, int]):
         """Process breeze percept with logical deduction"""
         adj_cells = self._get_adjacent_cells(position)
         unvisited_cells = [pos for pos in adj_cells if not self.query(f"Visited({pos[0]},{pos[1]})")]
 
-        # Check if any adjacent cell was previously marked as possible pit
         possible_pits = [pos for pos in adj_cells if self.get_confidence(pos, 'pit') == 0.5]
 
         if len(possible_pits) == 1:
@@ -153,7 +157,6 @@ class PropositionalKB:
             self.add_fact(f"DefinitePit({nx},{ny})")
         else:
             for nx, ny in unvisited_cells:
-                # Do not mark as possible pit if already definite wumpus or pit
                 if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
                     continue
                 if not self.query(f"Safe({nx},{ny})"):
@@ -177,12 +180,12 @@ class PropositionalKB:
             self.add_fact(f"DefiniteWumpus({nx},{ny})")
         else:
             for nx, ny in unvisited_cells:
-                # Do not mark as possible wumpus if already definite pit or wumpus
                 if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
                     continue
-                if not self.query(f"Safe({nx},{ny})"):
+                if not self.query(f"Safe({nx},{ny})") or self.get_confidence((nx, ny), 'wumpus') == 0.0:
                     self.set_confidence((nx, ny), 'wumpus', 0.5)
                     self.add_fact(f"PossibleWumpus({nx},{ny})")
+                    logger.debug(f"Marked PossibleWumpus at ({nx},{ny}) due to stench at {position}")
 
     def _process_breeze_and_stench(self, position: Tuple[int, int]):
         """Process both breeze and stench percepts"""
@@ -190,7 +193,6 @@ class PropositionalKB:
         unvisited_cells = [pos for pos in adj_cells if not self.query(f"Visited({pos[0]},{pos[1]})")]
     
         for nx, ny in unvisited_cells:
-            # Do not mark as possible pit/wumpus if already definite pit or wumpus
             if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
                 continue
             if not self.query(f"Safe({nx},{ny})"):
@@ -198,7 +200,7 @@ class PropositionalKB:
                 self.set_confidence((nx, ny), 'wumpus', 0.5)
                 self.add_fact(f"PossiblePit({nx},{ny})")
                 self.add_fact(f"PossibleWumpus({nx},{ny})")
-    
+
     def update_playing_grid_from_kb(self):
         """Update playing grid based on KB knowledge and confidence"""
         for y in range(self.grid_size):
@@ -218,30 +220,29 @@ class PropositionalKB:
                 elif self.get_confidence((x, y), 'pit') == 0.5:
                     self.playing_grid[y][x] = "-2"  # Possible pit
                 elif self.get_confidence((x, y), 'wumpus') == 0.5:
-                    self.playing_grid[y][x] = "-1"  # Possible wumpus
+                    self.playing_grid[y][x] = "-1"  # Possible wumpus"
 
-    
     def set_gold_found(self, position: Tuple[int, int]):
         x, y = position
         self.playing_grid[y][x] = "99"
         self.gold_cell = position
         self.add_fact(f"Gold({x},{y})")
-    
+
     def has_gold_location(self) -> bool:
         return self.gold_cell is not None
-    
+
     def get_gold_location(self) -> Tuple[int, int]:
         return self.gold_cell
-    
+
     def get_playing_grid(self) -> List[List[str]]:
         return [row[:] for row in self.playing_grid]
-    
+
     def all_cells_visited(self) -> bool:
         for row in self.playing_grid:
             if "0" in row:
                 return False
         return True
-    
+
     def _get_adjacent_cells(self, position: Tuple[int, int]) -> List[Tuple[int, int]]:
         x, y = position
         adjacent = []
@@ -250,7 +251,7 @@ class PropositionalKB:
             if 0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size:
                 adjacent.append((new_x, new_y))
         return adjacent
-    
+
     def get_knowledge_summary(self) -> List[Dict]:
         summary = []
         for fact in sorted(self.facts):
@@ -260,7 +261,6 @@ class PropositionalKB:
                 "confidence": 1.0
             })
         
-        # Add confidence information
         for pos, threats in self.cell_confidence.items():
             for threat_type, confidence in threats.items():
                 if confidence > 0:
