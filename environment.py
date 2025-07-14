@@ -24,7 +24,7 @@ class WumpusEnvironment:
         self.percepts_grid[gold_pos[1]][gold_pos[0]] = "G"
         
         # Place 1-3 Wumpuses at random positions (not (0,0) or gold)
-        num_wumpuses = random.randint(1, 3)
+        num_wumpuses = random.randint(2, 6)
         available_positions = [(x, y) for x in range(self.grid_size) for y in range(self.grid_size) 
                              if (x, y) != (0, 0) and (x, y) != gold_pos]
         wumpus_positions = random.sample(available_positions, num_wumpuses)
@@ -36,7 +36,7 @@ class WumpusEnvironment:
         available_positions = [(x, y) for x, y in available_positions if (x, y) not in wumpus_positions]
         
         # Place 3-6 pits at random positions (not (0,0), gold, or Wumpuses)
-        num_pits = random.randint(3, 6)
+        num_pits = random.randint(4, 8)
         pit_positions = random.sample(available_positions, min(num_pits, len(available_positions)))
         for x, y in pit_positions:
             self.grid[y][x] = "P"

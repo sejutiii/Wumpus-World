@@ -98,11 +98,13 @@ async def start_game():
 
 @app.post("/api/step")
 async def step_game():
+    if not game_state.environment:
+        raise HTTPException(status_code=400, detail="Game not initialized. Call /api/reset or /api/start first.")
+    
     if game_state.game_over:
         return {"status": "Game is over"}
     
     await execute_agent_step()
-    
     return {"status": "Step executed"}
 
 @app.get("/api/state")
