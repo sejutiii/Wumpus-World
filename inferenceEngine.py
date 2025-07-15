@@ -33,7 +33,30 @@ class InferenceEngine:
         # Check if we're waiting for arrow result
         if self.pending_arrow_result:
             heard_scream = "Scream" in percepts
-            self.kb.process_arrow_result(self.pending_arrow_result, heard_scream)
+            target = self.pending_arrow_result
+            if heard_scream:
+                self.kb.mark_wumpus_dead(target)
+                self.kb.add_fact(f"Safe({target[0]},{target[1]})")
+                self.kb.set_confidence(target, 'wumpus', 0.0)
+                self.kb.set_confidence(target, 'pit', 0.0)
+                self.last_reasoning = f"Scream heard after shooting at {target} - Wumpus killed, cell is safe"
+                self.last_inference = f"Scream ∧ Shot({target}) → Safe({target[0]},{target[1]})"
+            else:
+                # No scream - deduce based on percepts at current position
+                if "Stench" in percepts and "Breeze" not in percepts:
+                    self.kb.set_confidence(target, 'wumpus', 0.0)
+                    self.kb.add_fact(f"Safe({target[0]},{target[1]})")
+                    self.last_reasoning = f"No scream after shooting at {target} with stench - No wumpus, cell is safe"
+                    self.last_inference = f"¬Scream ∧ Stench ∧ Shot({target}) → Safe({target[0]},{target[1]})"
+                elif "Stench" in percepts and "Breeze" in percepts:
+                    # Ambiguous - could be pit, no change to wumpus confidence
+                    self.last_reasoning = f"No scream after shooting at {target} with stench and breeze - Possible pit, no wumpus conclusion"
+                    self.last_inference = f"¬Scream ∧ Stench ∧ Breeze ∧ Shot({target}) → Unknown"
+                else:
+                    self.kb.set_confidence(target, 'wumpus', 0.0)
+                    self.kb.add_fact(f"Safe({target[0]},{target[1]})")
+                    self.last_reasoning = f"No scream after shooting at {target} - No wumpus, cell is safe"
+                    self.last_inference = f"¬Scream ∧ Shot({target}) → Safe({target[0]},{target[1]})"
             self.pending_arrow_result = None
         
         if "Glitter" in percepts:
@@ -48,22 +71,17 @@ class InferenceEngine:
                 self.last_inference = "GoldFound ∧ Position(x,y) ≠ (0,0) → MoveToExit"
                 return action
         
-        # Check if arrow should be used when no safe path exists
+        # Only use arrow if no safe unvisited cells can be reached
         if self.kb.has_arrow and not self.kb.can_reach_unvisited_safely(current_pos):
-            arrow_targets = self.kb.get_arrow_targets(current_pos)
-            if arrow_targets:
-                # Prioritize definite wumpus, then highest wumpus confidence
-                definite_wumpus = [pos for pos in arrow_targets if self.kb.get_confidence(pos, 'wumpus') == 1.0]
-                if definite_wumpus:
-                    target = definite_wumpus[0]
-                else:
-                    target = max(arrow_targets, key=lambda pos: self.kb.get_confidence(pos, 'wumpus'))
-                
+            adj_cells = self._get_adjacent_cells(current_pos)
+            wumpus_targets = [cell for cell in adj_cells if self.kb.get_confidence(cell, 'wumpus') >= 0.5]
+            if wumpus_targets:
+                target = random.choice(wumpus_targets)
                 direction = self._get_direction(current_pos, target)
                 self.kb.use_arrow(target)
                 self.pending_arrow_result = target
-                self.last_reasoning = f"No safe path to unvisited cells - shooting arrow at {target} (wumpus confidence: {self.kb.get_confidence(target, 'wumpus'):.2f})"
-                self.last_inference = f"NoSafePath ∧ HasArrow → ShootArrow_{direction}"
+                self.last_reasoning = f"No safe unvisited cells, shooting at possible wumpus {target} (wumpus confidence: {self.kb.get_confidence(target, 'wumpus'):.2f})"
+                self.last_inference = f"¬CanReachUnvisited ∧ HasArrow ∧ Wumpus({target[0]},{target[1]}) → ShootArrow_{direction}"
                 logger.info(f"Shooting arrow at {target} from {current_pos}")
                 return f"SHOOT_{direction}"
         
@@ -229,7 +247,7 @@ class InferenceEngine:
     def _is_deadly_cell(self, position: Tuple[int, int]) -> bool:
         pit_conf = self.kb.get_confidence(position, 'pit')
         wumpus_conf = self.kb.get_confidence(position, 'wumpus')
-        logger.debug(f"Checking if {position} is deadly - PLEASE ASSIST: Pit conf: {pit_conf}, Wumpus conf: {wumpus_conf}")
+        logger.debug(f"Checking if {position} is deadly - Pit: {pit_conf}, Wumpus: {wumpus_conf}")
         return pit_conf > 0.8 or wumpus_conf > 0.8
 
     def _find_backtrack_cell(self, current_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
