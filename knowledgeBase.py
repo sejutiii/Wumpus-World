@@ -147,25 +147,18 @@ class PropositionalKB:
         """Process breeze percept with logical deduction"""
         adj_cells = self._get_adjacent_cells(position)
         unvisited_cells = [pos for pos in adj_cells if not self.query(f"Visited({pos[0]},{pos[1]})")]
+        visited_or_safe_cells = [pos for pos in adj_cells if self.query(f"Visited({pos[0]},{pos[1]})") or self.query(f"Safe({pos[0]},{pos[1]})")]
 
-        possible_pits = [pos for pos in adj_cells if self.get_confidence(pos, 'pit') == 0.5]
-
-        if len(possible_pits) == 1:
-            nx, ny = possible_pits[0]
-            self.set_confidence((nx, ny), 'pit', 1.0)
-            self.add_fact(f"DefinitePit({nx},{ny})")
-            # Propagate threat to adjacent unvisited cells
-            self._propagate_threat((nx, ny), 'pit')
-        elif len(unvisited_cells) == 1:
+        # If all adjacent cells except one are visited or safe, mark the remaining cell as definite pit
+        if len(unvisited_cells) == 1 and len(visited_or_safe_cells) == (len(adj_cells) - 1):
             nx, ny = unvisited_cells[0]
             self.set_confidence((nx, ny), 'pit', 1.0)
             self.add_fact(f"DefinitePit({nx},{ny})")
             self._propagate_threat((nx, ny), 'pit')
         else:
+            # Mark all unvisited cells as possible pits with 0.5 confidence
             for nx, ny in unvisited_cells:
-                if self.get_confidence((nx, ny), 'pit') == 1.0 or self.get_confidence((nx, ny), 'wumpus') == 1.0:
-                    continue
-                if not self.query(f"Safe({nx},{ny})"):
+                if self.get_confidence((nx, ny), 'pit') < 1.0 and self.get_confidence((nx, ny), 'wumpus') < 1.0:
                     self.set_confidence((nx, ny), 'pit', 0.5)
                     self.add_fact(f"PossiblePit({nx},{ny})")
 
