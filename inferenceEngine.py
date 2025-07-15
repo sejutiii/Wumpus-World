@@ -19,6 +19,7 @@ class InferenceEngine:
         self.max_history_length = 10
         self.safety_threshold = 0.1
         self.position_counts = {}
+        self.pending_arrow_result = None
 
     def determine_next_action(self, current_pos: Tuple[int, int], percepts: List[str], grid_size: int) -> str:
         self.last_reasoning = ""
@@ -28,6 +29,12 @@ class InferenceEngine:
             self.move_history.pop(0)
         
         self.position_counts[current_pos] = self.position_counts.get(current_pos, 0) + 1
+        
+        # Check if we're waiting for arrow result
+        if self.pending_arrow_result:
+            heard_scream = "Scream" in percepts
+            self.kb.process_arrow_result(self.pending_arrow_result, heard_scream)
+            self.pending_arrow_result = None
         
         if "Glitter" in percepts:
             self.last_reasoning = "Gold detected - grabbing it!"
@@ -40,6 +47,25 @@ class InferenceEngine:
                 self.last_reasoning = "Returning to (0,0) with gold"
                 self.last_inference = "GoldFound ∧ Position(x,y) ≠ (0,0) → MoveToExit"
                 return action
+        
+        # Check if arrow should be used when no safe path exists
+        if self.kb.has_arrow and not self.kb.can_reach_unvisited_safely(current_pos):
+            arrow_targets = self.kb.get_arrow_targets(current_pos)
+            if arrow_targets:
+                # Prioritize definite wumpus, then highest wumpus confidence
+                definite_wumpus = [pos for pos in arrow_targets if self.kb.get_confidence(pos, 'wumpus') == 1.0]
+                if definite_wumpus:
+                    target = definite_wumpus[0]
+                else:
+                    target = max(arrow_targets, key=lambda pos: self.kb.get_confidence(pos, 'wumpus'))
+                
+                direction = self._get_direction(current_pos, target)
+                self.kb.use_arrow(target)
+                self.pending_arrow_result = target
+                self.last_reasoning = f"No safe path to unvisited cells - shooting arrow at {target} (wumpus confidence: {self.kb.get_confidence(target, 'wumpus'):.2f})"
+                self.last_inference = f"NoSafePath ∧ HasArrow → ShootArrow_{direction}"
+                logger.info(f"Shooting arrow at {target} from {current_pos}")
+                return f"SHOOT_{direction}"
         
         next_move = self._choose_next_move(current_pos)
         if not next_move:
@@ -203,7 +229,7 @@ class InferenceEngine:
     def _is_deadly_cell(self, position: Tuple[int, int]) -> bool:
         pit_conf = self.kb.get_confidence(position, 'pit')
         wumpus_conf = self.kb.get_confidence(position, 'wumpus')
-        logger.debug(f"Checking if {position} is deadly - Pit: {pit_conf}, Wumpus: {wumpus_conf}")
+        logger.debug(f"Checking if {position} is deadly - PLEASE ASSIST: Pit conf: {pit_conf}, Wumpus conf: {wumpus_conf}")
         return pit_conf > 0.8 or wumpus_conf > 0.8
 
     def _find_backtrack_cell(self, current_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:

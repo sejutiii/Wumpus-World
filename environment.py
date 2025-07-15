@@ -6,6 +6,7 @@ class WumpusEnvironment:
         self.grid_size = grid_size
         self.grid = None
         self.percepts_grid = None
+        self.last_action_result = None 
         
     def load_default_environment(self):
         """Generate a random environment instead of loading from file"""
@@ -150,3 +151,74 @@ class WumpusEnvironment:
             if 0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size:
                 adjacent.append((new_x, new_y))
         return adjacent
+    
+    def shoot_arrow(self, current_pos: Tuple[int, int], direction: str) -> bool:
+        """Shoot arrow in given direction, return True if wumpus was hit"""
+        target_pos = self._get_target_position(current_pos, direction)
+        if not target_pos or not self.is_valid_position(target_pos):
+            return False
+        
+        x, y = target_pos
+        cell_contents = self.grid[y][x]
+        
+        if cell_contents == "W":
+            # Wumpus hit! Remove it and make cell safe
+            self.grid[y][x] = "-"
+            self.percepts_grid[y][x] = "-"
+            self._regenerate_percepts()  # Update percepts after wumpus removal
+            logger.info(f"Arrow hit wumpus at {target_pos}")
+            return True
+        else:
+            logger.info(f"Arrow missed - no wumpus at {target_pos}")
+            return False
+        
+    def _get_target_position(self, current_pos: Tuple[int, int], direction: str) -> Tuple[int, int]:
+        """Get target position based on direction"""
+        x, y = current_pos
+        if direction == "UP":
+            return (x, y - 1)
+        elif direction == "DOWN":
+            return (x, y + 1)
+        elif direction == "LEFT":
+            return (x - 1, y)
+        elif direction == "RIGHT":
+            return (x + 1, y)
+        return None
+    
+    def _regenerate_percepts(self):
+        """Regenerate percepts after environment changes"""
+        # Reset percepts grid
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                if self.grid[y][x] in ["P", "W", "G"]:
+                    self.percepts_grid[y][x] = self.grid[y][x]
+                else:
+                    self.percepts_grid[y][x] = "-"
+        
+        # Generate percepts for adjacent cells
+        adjacent_p = set()
+        adjacent_w = set()
+        
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                if self.grid[y][x] == "P":
+                    for nx, ny in self._get_adjacent_cells((x, y)):
+                        if self.grid[ny][nx] == "-":
+                            adjacent_p.add((nx, ny))
+                if self.grid[y][x] == "W":
+                    for nx, ny in self._get_adjacent_cells((x, y)):
+                        if self.grid[ny][nx] == "-":
+                            adjacent_w.add((nx, ny))
+        
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                if self.grid[y][x] == "-":
+                    is_breeze = (x, y) in adjacent_p
+                    is_stench = (x, y) in adjacent_w
+                    if is_breeze and is_stench:
+                        self.percepts_grid[y][x] = "T"
+                    elif is_breeze:
+                        self.percepts_grid[y][x] = "B"
+                    elif is_stench:
+                        self.percepts_grid[y][x] = "S"
+    
