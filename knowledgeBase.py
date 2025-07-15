@@ -15,6 +15,9 @@ class PropositionalKB:
         self.playing_grid[0][0] = "1"
         self.gold_cell = None
         self.cell_confidence = {}  # (x,y) -> {'pit': confidence, 'wumpus': confidence}
+        self.has_arrow = True  # NEW: Track if arrow is available
+        self.arrow_used = False  # NEW: Track if arrow has been used
+        self.last_arrow_target = None
 
     def add_fact(self, fact: str):
         """Add a fact to the knowledge base"""
@@ -290,3 +293,91 @@ class PropositionalKB:
                     })
         
         return summary
+    
+    def use_arrow(self, target_pos: Tuple[int, int]) -> None:
+        """Use the arrow on target position"""
+        self.has_arrow = False
+        self.arrow_used = True
+        self.last_arrow_target = target_pos
+        logger.info(f"Arrow used on position {target_pos}")
+
+    def process_arrow_result(self, target_pos: Tuple[int, int], heard_scream: bool) -> None:
+        """Process the result of shooting the arrow"""
+        x, y = target_pos
+        if heard_scream:
+            # Wumpus was killed
+            self.set_confidence(target_pos, 'wumpus', 0.0)
+            self.add_fact(f"Safe({x},{y})")
+            self.add_fact(f"WumpusKilled({x},{y})")
+            logger.info(f"Wumpus killed at {target_pos}, cell is now safe")
+        else:
+            # No scream - this could mean:
+            # 1. Cell was safe (no wumpus)
+            # 2. Cell has a pit (if it also has stench and breeze)
+            
+            # Check if this cell had both stench and breeze indicators
+            had_both_threats = (self.get_confidence(target_pos, 'pit') > 0 and 
+                              self.get_confidence(target_pos, 'wumpus') > 0)
+            
+            if had_both_threats:
+                # Ambiguous case - could be pit since no wumpus
+                # Keep pit confidence, remove wumpus confidence
+                self.set_confidence(target_pos, 'wumpus', 0.0)
+                logger.info(f"No scream at {target_pos} - could be pit (ambiguous case)")
+            else:
+                # Cell was safe from the beginning
+                self.set_confidence(target_pos, 'wumpus', 0.0)
+                self.set_confidence(target_pos, 'pit', 0.0)
+                self.add_fact(f"Safe({x},{y})")
+                logger.info(f"No scream at {target_pos} - cell was safe")
+
+    def can_reach_unvisited_safely(self, current_pos: Tuple[int, int]) -> bool:
+        """Check if there's a path to any unvisited cell without going through definite threats"""
+        from collections import deque
+        
+        queue = deque([current_pos])
+        visited = {current_pos}
+        max_depth = 15  # Reasonable search depth
+        
+        while queue:
+            pos = queue.popleft()
+            
+            # Check if this position leads to unvisited safe cells
+            for adj_pos in self._get_adjacent_cells(pos):
+                if adj_pos in visited:
+                    continue
+                    
+                x, y = adj_pos
+                
+                # If it's an unvisited safe cell, we can reach it
+                if (not self.query(f"Visited({x},{y})") and 
+                    (self.query(f"Safe({x},{y})") or 
+                     (self.get_confidence(adj_pos, 'pit') < 0.1 and 
+                      self.get_confidence(adj_pos, 'wumpus') < 0.1))):
+                    return True
+                
+                # If it's a safe path, add to queue for further exploration
+                if (self.query(f"Safe({x},{y})") or 
+                    self.query(f"Visited({x},{y})") or
+                    (self.get_confidence(adj_pos, 'pit') < 0.1 and 
+                     self.get_confidence(adj_pos, 'wumpus') < 0.1)):
+                    visited.add(adj_pos)
+                    queue.append(adj_pos)
+        
+        return False
+
+    def get_arrow_targets(self, current_pos: Tuple[int, int]) -> List[Tuple[int, int]]:
+        """Get possible arrow targets (adjacent cells with possible/definite wumpus)"""
+        if not self.has_arrow:
+            return []
+        
+        targets = []
+        for adj_pos in self._get_adjacent_cells(current_pos):
+            x, y = adj_pos
+            wumpus_conf = self.get_confidence(adj_pos, 'wumpus')
+            
+            # Target cells with possible or definite wumpus
+            if wumpus_conf >= 0.5 and not self.query(f"Visited({x},{y})"):
+                targets.append(adj_pos)
+        
+        return targets

@@ -169,7 +169,9 @@ def get_game_state_data():
             "knowledge_base": [],
             "last_inference": "",
             "percepts": [],
-            "game_status": "playing"
+            "game_status": "playing",
+            "has_arrow": True,  # NEW
+            "arrow_used": False  # NEW
         }
     
     logger.debug(f"Game state data requested - Agent at {game_state.agent_pos}")
@@ -187,9 +189,10 @@ def get_game_state_data():
         "knowledge_base": game_state.knowledge_base.get_knowledge_summary(),
         "last_inference": game_state.inference_engine.get_last_inference(),
         "percepts": game_state.environment.get_percepts(game_state.agent_pos),
-        "game_status": game_state.game_status
+        "game_status": game_state.game_status,
+        "has_arrow": game_state.knowledge_base.has_arrow,  # NEW
+        "arrow_used": game_state.knowledge_base.arrow_used  # NEW
     }
-
 async def run_ai_agent():
     while not game_state.game_over and game_state.agent_alive:
         logger.info(f"Running AI agent step at position {game_state.agent_pos}")
@@ -221,8 +224,18 @@ async def execute_agent_step():
             game_state.game_over = True
             game_state.game_status = "won"
             logger.info("Gold grabbed, game won")
+    
+    # NEW: Handle arrow shooting
+    if action.startswith("SHOOT_"):
+        direction = action.split("_")[1]
+        heard_scream = game_state.environment.shoot_arrow(game_state.agent_pos, direction)
+        if heard_scream:
+            # Add scream to percepts for next step
+            percepts.append("Scream")
+        logger.info(f"Arrow shot {direction}, scream heard: {heard_scream}")
+    
     # Only allow movement after gold is found
-    if action.startswith("MOVE_"):
+    elif action.startswith("MOVE_"):
         direction = action.split("_")[1]
         new_pos = get_new_position(game_state.agent_pos, direction)
         if game_state.environment.is_valid_position(new_pos):
@@ -235,6 +248,7 @@ async def execute_agent_step():
                 game_state.game_over = True
                 game_state.game_status = "lost"
                 logger.error(f"Agent defeated at {new_pos} by {cell_contents}")
+    
     # Check stopping conditions
     if game_state.has_gold and game_state.agent_pos == (0, 0):
         game_state.game_over = True
